@@ -510,8 +510,3 @@ Areas of interest:
 **Built with ❤️ for F1 fans**
 
 *Version 2.0 - Streamlit + FastF1 Edition*
-#   F O R M U L A _ 1 _ P R E D I C T O R _ S T R E A M L I T _ 2 0 2 6 
- 
- #   F O R M U L A _ 1 _ P R E D I C T O R _ S T R E A M L I T _ 2 0 2 6  
- #   F O R M U L A _ 1 _ P R E D I C T O R _ S T R E A M L I T _ 2 0 2 6  
- 
