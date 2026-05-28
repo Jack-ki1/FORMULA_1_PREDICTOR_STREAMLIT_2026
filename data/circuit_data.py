@@ -58,6 +58,19 @@ CIRCUITS: dict = {
         "wall_crash_probability_per_lap": 0.004, "drs_zones": 3,
         "team_historical_wins_since_2010": {"mercedes": 1, "red_bull": 2, "ferrari": 0, "mclaren": 1},
     },
+    "saudi_arabia": {
+        "id": "saudi_arabia", "name": "Jeddah Corniche Circuit",
+        "city": "Jeddah", "country": "Saudi Arabia",
+        "round_2026": 5, "race_date": "2026-04-26", "sprint_weekend": True,
+        "circuit_type": ["street", "power_unit"], "lap_count": 50,
+        "lap_distance_km": 6.174, "total_distance_km": 308.450,
+        "safety_car_probability": 0.75, "overtaking_difficulty": 4,
+        "power_unit_demand": 9.0, "brake_demand": 8.5, "tire_deg_rate": 5.5,
+        "active_aero_demand": 7.5, "rain_probability_typical": 0.05,
+        "wall_crash_probability_per_lap": 0.005, "drs_zones": 3,
+        "team_historical_wins_since_2010": {"mercedes": 2, "red_bull": 2, "ferrari": 0, "mclaren": 0},
+        "notes": "Fastest street circuit. High-speed corners near walls. Very high SC probability.",
+    },
 
     # ── Upcoming ─────────────────────────────────────────────────────────────
 
@@ -209,10 +222,37 @@ CIRCUITS: dict = {
         "team_historical_wins_since_2010": {"mercedes": 6, "red_bull": 5, "ferrari": 3, "mclaren": 1},
         "notes": "Night race. Extremely humid. Hard on brakes and drivers. Safety cars guaranteed.",
     },
+    "bahrain": {
+        "id": "bahrain", "name": "Bahrain International Circuit",
+        "city": "Sakhir", "country": "Bahrain",
+        "round_2026": 4, "race_date": "2026-04-19", "sprint_weekend": True,
+        "circuit_type": ["power_unit", "balanced"], "lap_count": 57,
+        "lap_distance_km": 5.412, "total_distance_km": 308.0,
+        "safety_car_probability": 0.40, "overtaking_difficulty": 6,
+        "power_unit_demand": 8.0, "brake_demand": 7.0, "tire_deg_rate": 6.0,
+        "active_aero_demand": 6.0, "rain_probability_typical": 0.02,
+        "wall_crash_probability_per_lap": 0.002, "drs_zones": 3,
+        "team_historical_wins_since_2010": {"mercedes": 9, "red_bull": 6, "ferrari": 2, "mclaren": 1},
+    },
+
+    "madrid": {
+        "id": "madrid", "name": "Ifema Madrid Circuit",
+        "city": "Madrid", "country": "Spain",
+        "round_2026": 16, "race_date": "2026-09-13", "sprint_weekend": False,
+        "circuit_type": ["street", "balanced"], "lap_count": 55,
+        "lap_distance_km": 5.47, "total_distance_km": 300.85,
+        "safety_car_probability": 0.65, "overtaking_difficulty": 6,
+        "power_unit_demand": 7.0, "brake_demand": 7.5, "tire_deg_rate": 7.0,
+        "active_aero_demand": 7.5, "rain_probability_typical": 0.12,
+        "wall_crash_probability_per_lap": 0.003, "drs_zones": 2,
+        "team_historical_wins_since_2010": {},
+    },
+
     "usa": {
         "id": "usa", "name": "Circuit of The Americas",
         "city": "Austin", "country": "USA",
         "round_2026": 16, "race_date": "2026-10-18", "sprint_weekend": True,
+
         "circuit_type": ["balanced", "technical"], "lap_count": 56,
         "lap_distance_km": 5.513, "total_distance_km": 308.405,
         "safety_car_probability": 0.58, "overtaking_difficulty": 5,
@@ -307,3 +347,11 @@ def circuit_favors_team(circuit_id: str, team_id: str) -> float:
     total = sum(wins.values()) or 1
     share = wins.get(team_id, 0) / total
     return 0.85 + (share * 1.60)
+
+
+__all__ = [
+    "CIRCUITS",
+    "get_circuit",
+    "get_all_circuits",
+    "circuit_favors_team",
+]

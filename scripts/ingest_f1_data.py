@@ -8,6 +8,8 @@ It synchronizes:
 - Constructor standings
 - Race calendar and results
 - Historical snapshots for backtesting
+
+FIX: Updated to use correct Jolpica Ergast v1 API endpoints.
 """
 
 import json
@@ -15,48 +17,55 @@ import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Any
 import os
+import logging
 
-# Jolpica-F1 API base URL
-JOLPICA_BASE_URL = "https://api.jolpica.com"
+logger = logging.getLogger(__name__)
+
+# FIX #19: Correct Jolpica-F1 API base URL (Ergast v1 format)
+JOLPICA_BASE_URL = "https://api.jolpica.com/ergast/v1"
 
 def fetch_current_drivers() -> List[Dict]:
     """Fetch current season drivers from Jolpica API."""
     try:
-        response = requests.get(f"{JOLPICA_BASE_URL}/current/drivers")
+        response = requests.get(f"{JOLPICA_BASE_URL}/current/drivers.json", timeout=10)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        return data["MRData"]["DriverTable"]["Drivers"]
     except Exception as e:
-        print(f"Error fetching drivers: {e}")
+        logger.error("Error fetching drivers: %s", e)
         return []
 
 def fetch_current_constructors() -> List[Dict]:
     """Fetch current season constructors from Jolpica API."""
     try:
-        response = requests.get(f"{JOLPICA_BASE_URL}/current/constructors")
+        response = requests.get(f"{JOLPICA_BASE_URL}/current/constructors.json", timeout=10)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        return data["MRData"]["ConstructorTable"]["Constructors"]
     except Exception as e:
-        print(f"Error fetching constructors: {e}")
+        logger.error("Error fetching constructors: %s", e)
         return []
 
 def fetch_current_calendar() -> List[Dict]:
     """Fetch current season calendar from Jolpica API."""
     try:
-        response = requests.get(f"{JOLPICA_BASE_URL}/current/calendar")
+        response = requests.get(f"{JOLPICA_BASE_URL}/current/races.json", timeout=10)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        return data["MRData"]["RaceTable"]["Races"]
     except Exception as e:
-        print(f"Error fetching calendar: {e}")
+        logger.error("Error fetching calendar: %s", e)
         return []
 
 def fetch_race_results(race_id: str) -> List[Dict]:
     """Fetch results for a specific race from Jolpica API."""
     try:
-        response = requests.get(f"{JOLPICA_BASE_URL}/current/races/{race_id}/results")
+        response = requests.get(f"{JOLPICA_BASE_URL}/current/races/{race_id}/results.json", timeout=10)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        return data["MRData"]["RaceTable"]["Races"][0].get("Results", [])
     except Exception as e:
-        print(f"Error fetching race results for {race_id}: {e}")
+        logger.error("Error fetching race results for %s: %s", race_id, e)
         return []
 
 def update_local_driver_data(drivers: List[Dict]):

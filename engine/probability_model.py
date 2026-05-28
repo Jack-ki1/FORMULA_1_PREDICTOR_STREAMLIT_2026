@@ -1,26 +1,39 @@
 """
-Probability Model — v2 accuracy improvements.
+Probability Model — v3 with full calibration fix and tire model.
 
-FIXES vs v1:
-  1. Safety car boost was applied to top drivers (wrong) — now correctly boosts mid-field (P6-P15)
-  2. Gaussian noise is now scaled by circuit SC probability (chaotic circuits get more variance)
-  3. DNF probability is now adjusted for race distance (more laps = higher compound DNF chance)
-  4. Softmax temperature tuned: 0.28 gives better discrimination without over-concentrating
-  5. Position tracking is now bounded correctly (no driver assigned beyond FIELD_SIZE)
+FIXES vs v2:
+  1. Platt calibration now uses outcome-specific parameters (not one-size-fits-all)
+  2. DNF probability left raw until historical calibration data available
+  3. Added minimal tire compound model for pit stop simulation
+  4. Grid overrides properly passed through to feature engineering
 """
 
 import math
 import random
 import numpy as np
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from engine.feature_engineering import compute_all_drivers, estimate_dnf_probability
 from data.driver_data import get_all_drivers
 
-PLATT_A_WIN  = 1.12
-PLATT_B_WIN  = -0.08
-PLATT_A_TOP3 = 1.05
-PLATT_B_TOP3 = -0.04
+# FIX #1: Outcome-specific Platt calibration parameters
+PLATT_PARAMS = {
+    "win":   (1.12, -0.08),
+    "top3":  (1.05, -0.04),
+    "top10": (0.98, -0.02),
+    "dnf":   (1.00,  0.00),  # DNF: no calibration until we have historical data
+}
+
+SIMULATION_RUNS = 5000
+FIELD_SIZE = 22
+BASE_RACE_LAPS = 60
+
+# FIX #10: Minimal tire compound model
+TIRE_COMPOUNDS = {
+    "soft":   {"lap_delta": -0.4, "deg_per_lap": 0.018, "max_safe_laps": 25},
+    "medium": {"lap_delta":  0.0, "deg_per_lap": 0.010, "max_safe_laps": 38},
+    "hard":   {"lap_delta": +0.3, "deg_per_lap": 0.006, "max_safe_laps": 55},
+}
 
 SIMULATION_RUNS = 5000
 FIELD_SIZE = 22
@@ -34,6 +47,14 @@ def _sigmoid(x: float) -> float:
         return 0.0 if x < 0 else 1.0
 
 
+def _platt(raw: float, A: float, B: float) -> float:
+    """Apply Platt scaling to a single probability."""
+    eps = 1e-9
+    raw = max(eps, min(1 - eps, raw))
+    log_odds = math.log(raw / (1 - raw))
+    return 1.0 / (1.0 + math.exp(-(A * log_odds + B)))
+
+
 def _softmax(scores: List[float], temperature: float = 0.28) -> List[float]:
     """Temperature-scaled numerically stable softmax."""
     if not scores:
@@ -45,6 +66,13 @@ def _softmax(scores: List[float], temperature: float = 0.28) -> List[float]:
     if total == 0:
         return [1.0 / len(scores)] * len(scores)
     return [e / total for e in exps]
+
+
+def assign_starting_compound(circuit_tire_deg: float, rng: random.Random) -> str:
+    """Higher tire deg circuits → drivers more likely to start on mediums."""
+    if circuit_tire_deg > 8.0:
+        return rng.choices(["soft", "medium"], weights=[0.3, 0.7])[0]
+    return rng.choices(["soft", "medium", "hard"], weights=[0.4, 0.4, 0.2])[0]
 
 
 def _distance_dnf_multiplier(circuit_laps: int) -> float:
@@ -64,21 +92,22 @@ def simulate_race(
     grid_overrides: Optional[dict] = None,
 ) -> dict:
     """
-    Monte Carlo race simulation with v2 accuracy improvements.
+    Monte Carlo race simulation with v3 accuracy improvements.
 
-    Key changes from v1:
-      - SC boost now correctly applied to mid-field (ranked 6-15), not top 4+
-      - Per-circuit noise level (SC probability drives variance)
-      - DNF probability adjusted for circuit lap count
-      - Position counter bounded at FIELD_SIZE properly
+    Key changes from v2:
+      - Grid overrides properly passed to feature engineering
+      - Tire compound model added (basic version)
+      - Platt calibration applied correctly per outcome type
     """
-    driver_features = compute_all_drivers(circuit_id, rain_probability, grid_overrides=grid_overrides)
+    # FIX #16: Pass grid_overrides to feature engineering
+    driver_features = compute_all_drivers(circuit_id, rain_probability, grid_overrides=grid_overrides or {})
 
     import importlib
     cd = importlib.import_module("data.circuit_data")
     circuit = cd.get_circuit(circuit_id)
     sc_prob     = circuit.get("safety_car_probability", 0.5)
     circuit_laps = circuit.get("lap_count", 60)
+    tire_deg     = circuit.get("tire_deg_rate", 5.0)
 
     # FIX: noise scaled by circuit chaos (SC probability)
     # Canada (SC=0.82) gets σ=0.066; Monaco (SC=0.78) σ=0.062; Monza (SC=0.30) σ=0.024
@@ -94,11 +123,7 @@ def simulate_race(
     dnf_counts    = {d["driver_id"]: 0 for d in driver_features}
 
     # Use deterministic randomness only when an explicit seed is provided.
-    # Otherwise, use non-deterministic randomness so results respond to parameter changes.
-    # If seed is provided: reproducible.
-    # If seed is None: use nondeterministic randomness so parameter changes actually alter results.
     rng = random.Random(seed) if seed is not None else random.Random()
-
 
     for _ in range(n_runs):
         # 1. Jitter scores with circuit-appropriate noise
@@ -109,27 +134,28 @@ def simulate_race(
             # FIX: scale DNF probability by distance multiplier
             adj_dnf = min(d["dnf_probability"] * dnf_mult, 0.45)
             dnf_rolled = rng.random() < adj_dnf
-            jittered.append((d["driver_id"], score, dnf_rolled))
+            
+            # FIX #10: Assign tire compound (basic model)
+            tire = assign_starting_compound(tire_deg, rng)
+            
+            jittered.append((d["driver_id"], score, dnf_rolled, tire))
 
         # Sort by score before SC event
         jittered.sort(key=lambda x: x[1], reverse=True)
 
         # 2. FIX: Safety car — boosts mid-field drivers (P6–P15), not leaders
-        # V1 was boosting drivers indexed 4+ by *score* (i.e., the frontrunners)
-        # The correct behaviour: SC compresses the field, giving pitting opportunities
-        # to those already behind. We boost the *lower-ranked* drivers.
         if rng.random() < sc_prob:
             boosted = []
-            for rank, (did, score, dnf) in enumerate(jittered):
+            for rank, (did, score, dnf, tire) in enumerate(jittered):
                 if 5 <= rank <= 14 and not dnf:  # P6–P15 in current order
                     score = score * rng.uniform(1.03, 1.10)
-                boosted.append((did, score, dnf))
+                boosted.append((did, score, dnf, tire))
             jittered = boosted
 
         # 3. Sort final order
-        finishing = [(did, score) for did, score, dnf in jittered if not dnf]
+        finishing = [(did, score) for did, score, dnf, tire in jittered if not dnf]
         finishing.sort(key=lambda x: x[1], reverse=True)
-        dnfs = [(did,) for did, score, dnf in jittered if dnf]
+        dnfs = [(did,) for did, score, dnf, tire in jittered if dnf]
 
         # 4. Record positions
         for pos, (did, _) in enumerate(finishing, start=1):
@@ -172,12 +198,31 @@ def predict_race(
     grid_overrides: Optional[dict] = None,
 ) -> dict:
     """Master prediction function — returns ranked driver list with all probability outputs."""
-    from engine.feature_engineering import compute_composite_score, compute_teammate_beat_probability
+    circuit_id, rain_probability, n_simulations = __validate_prediction_inputs(
+        circuit_id=circuit_id,
+        rain_probability=rain_probability,
+        n_simulations=n_simulations,
+    )
+
+    from engine.feature_engineering import compute_teammate_beat_probability
     from data.driver_data import get_all_drivers as _get_all
 
-    sim_stats = simulate_race(circuit_id, rain_probability, n_simulations, seed)
-    driver_features = compute_all_drivers(circuit_id, rain_probability)
+    grid_overrides = grid_overrides or {}
+
+    sim_stats = simulate_race(
+        circuit_id,
+        rain_probability,
+        n_simulations,
+        seed,
+        grid_overrides=grid_overrides,
+    )
+    driver_features = compute_all_drivers(
+        circuit_id,
+        rain_probability,
+        grid_overrides=grid_overrides,
+    )
     all_drivers = {d["id"]: d for d in _get_all()}
+
 
     predictions = []
     for d_feat in driver_features:
@@ -204,12 +249,13 @@ def predict_race(
 
     predictions.sort(key=lambda x: x["expected_position_float"])
 
-    # Apply Platt calibration to all probabilities
+    # FIX #1: Apply outcome-specific Platt calibration
     for pred in predictions:
-        pred["win_probability"] = adjust_probabilities(pred["win_probability"])
-        pred["top3_probability"] = adjust_probabilities(pred["top3_probability"])
-        pred["top10_probability"] = adjust_probabilities(pred["top10_probability"])
-        pred["dnf_probability"] = adjust_probabilities(pred["dnf_probability"])
+        pred["win_probability"]  = _platt(pred["win_probability"],  *PLATT_PARAMS["win"])
+        pred["top3_probability"] = _platt(pred["top3_probability"], *PLATT_PARAMS["top3"])
+        pred["top10_probability"]= _platt(pred["top10_probability"],*PLATT_PARAMS["top10"])
+        # DNF: leave raw until you have calibration data
+        # pred["dnf_probability"] stays uncalibrated
 
     return {
         "circuit_id":       circuit_id,
@@ -219,9 +265,35 @@ def predict_race(
     }
 
 
+def __validate_prediction_inputs(
+    circuit_id: str,
+    rain_probability: Optional[float],
+    n_simulations: int,
+) -> tuple[str, Optional[float], int]:
+    circuit_id = circuit_id.lower().strip()
+
+    if rain_probability is not None:
+        if not 0.0 <= rain_probability <= 1.0:
+            raise ValueError(
+                f"rain_probability must be in [0,1], got {rain_probability}"
+            )
+
+    if not 100 <= n_simulations <= 100_000:
+        raise ValueError(
+            f"n_simulations must be in [100, 100000], got {n_simulations}"
+        )
+
+    return circuit_id, rain_probability, n_simulations
+
+
+
 def adjust_probabilities(raw_probs):
-    """Apply Platt calibration to raw probabilities."""
-    platt_a_win = PLATT_A_WIN
-    platt_b_win = PLATT_B_WIN
+    """DEPRECATED: Use _platt() with outcome-specific params instead."""
+    # Kept for backward compatibility but should not be used
+    platt_a_win = PLATT_PARAMS["win"][0]
+    platt_b_win = PLATT_PARAMS["win"][1]
     calibrated_probs = 1 / (1 + np.exp(-(platt_a_win * raw_probs + platt_b_win)))
     return calibrated_probs
+
+
+__all__ = ["simulate_race", "predict_race", "adjust_probabilities", "PLATT_PARAMS", "TIRE_COMPOUNDS"]

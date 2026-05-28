@@ -7,19 +7,17 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from typing import Dict, List
-import sys
-import os
+import traceback
 
-# Add parent directory to path to import prediction engine
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# FIX #12: Removed sys.path.insert - handled by conftest.py / pyproject.toml
 
 from engine.predictor import predict as run_predict, PredictionRequest
 from data.circuit_data import get_circuit
 from fastf1_integration import get_season_schedule
 
 
-def show():
-    """Main function to display the predictions page."""
+def _render():
+    """Actual page rendering logic wrapped in error boundary."""
     
     st.markdown('<div class="main-header">🏁 Race Predictions</div>', unsafe_allow_html=True)
     st.markdown("Use our probabilistic prediction engine to forecast race outcomes before they happen.")
@@ -358,3 +356,14 @@ def display_predictions(result: Dict, circuit_name: str, rain_prob: float, n_sim
         file_name=f"{circuit_name.replace(' ', '_')}_predictions.csv",
         mime="text/csv"
     )
+
+
+def show():
+    """Main function with error boundary wrapper."""
+    try:
+        _render()
+    except Exception as e:
+        st.error("This page encountered an error. Details below.")
+        with st.expander("Error details"):
+            st.code(traceback.format_exc())
+        st.info("Try refreshing or selecting a different session.")

@@ -645,8 +645,11 @@ DRIVERS: dict = {
 
 # Additional helper functions for driver data
 def get_driver(driver_id: str) -> dict:
-    """Return a specific driver by ID."""
-    return DRIVERS.get(driver_id)
+    """Return a specific driver by ID. Raises KeyError if not found."""
+    d = DRIVERS.get(driver_id)
+    if d is None:
+        raise KeyError(f"Driver '{driver_id}' not found. Available: {sorted(DRIVERS.keys())[:5]}...")
+    return d
 
 def get_all_drivers() -> list:
     """Return all drivers as a list."""
@@ -663,3 +666,12 @@ def get_driver_by_id(driver_id: str):
 def get_all_teams() -> set:
     """Return all unique team names."""
     return {driver['team'] for driver in DRIVERS.values()}
+
+
+__all__ = [
+    "get_driver",
+    "get_all_drivers", 
+    "get_drivers_for_team",
+    "get_all_teams",
+    "DRIVERS",
+]

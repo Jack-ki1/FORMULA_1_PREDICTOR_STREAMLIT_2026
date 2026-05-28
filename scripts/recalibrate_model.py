@@ -180,6 +180,34 @@ def run_recalibration(season: int, fit_platt: bool = False):
         title="[bold]Calibration Summary[/]",
     ))
 
+    # FIX #25: Save metrics to JSON for dashboard display
+    metrics_dir = Path(__file__).parent.parent / "data" / "historical"
+    metrics_dir.mkdir(exist_ok=True)
+    
+    metrics_json = {
+        "season": season,
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "metrics": {
+            "win_brier_score": round(win_bs, 5),
+            "win_log_loss": round(win_ll, 5),
+            "top3_brier_score": round(top3_bs, 5),
+            "top3_log_loss": round(top3_ll, 5),
+            "sample_size": len(win_probs),
+            "platt_scaling": {
+                "win": {"A": A_win, "B": B_win},
+                "top3": {"A": A_top3, "B": B_top3}
+            }
+        },
+        "calibration_curve": cal,
+        "status": "well_calibrated" if win_bs < 0.05 else "needs_review"
+    }
+    
+    output_file = metrics_dir / f"model_accuracy_{season}.json"
+    with open(output_file, 'w') as f:
+        json.dump(metrics_json, f, indent=2)
+    
+    console.print(f"\n[green]✓[/] Model accuracy metrics saved to {output_file}")
+
 
 def _current_platt_val(content: str, var_name: str) -> str:
     """Extract current Platt value from source code."""

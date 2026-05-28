@@ -5,6 +5,9 @@ Supports grid_overrides dict for post-qualifying accuracy boost.
 
 from dataclasses import dataclass, field
 from typing import Optional, Dict
+import logging
+
+logger = logging.getLogger(__name__)
 
 from data.circuit_data import get_circuit
 from engine.probability_model import predict_race
@@ -57,16 +60,25 @@ def _assign_confidence(win_prob: float, composite_score: float) -> str:
 
 
 def predict(request: PredictionRequest) -> dict:
-    circuit = get_circuit(request.circuit_id)
+    try:
+        circuit = get_circuit(request.circuit_id)
+    except KeyError as e:
+        logger.error("predict failed: circuit not found - %s", e)
+        raise
+    
     sc_prob   = circuit.get("safety_car_probability", 0.5)
     rain_prob = request.rain_probability or circuit.get("rain_probability_typical", 0.2)
 
-    raw = predict_race(
-        circuit_id=request.circuit_id,
-        rain_probability=request.rain_probability,
-        n_simulations=request.n_simulations,
-        seed=request.seed,
-    )
+    try:
+        raw = predict_race(
+            circuit_id=request.circuit_id,
+            rain_probability=request.rain_probability,
+            n_simulations=request.n_simulations,
+            seed=request.seed,
+        )
+    except Exception as e:
+        logger.error("predict_race failed for %s: %s", request.circuit_id, e)
+        raise
 
     predictions = []
     for p in raw["predictions"]:
@@ -126,3 +138,9 @@ def predict(request: PredictionRequest) -> dict:
 # that used `predict_race(...` which breaks module import on startup.
 # Prediction entrypoint for the app is `predict(PredictionRequest)`.
 
+
+__all__ = [
+    "PredictionRequest",
+    "DriverPrediction",
+    "predict",
+]
