@@ -162,10 +162,12 @@ def generate_report(
         raw_predictions = result["raw"]["predictions"]
         # Merge raw data with processed predictions
         for pred in predictions:
-            driver_id = pred.get("driver")
+            # FIX #2: Use consistent key - predictions use "driver" which is the display name
+            driver_display = pred.get("driver", "")
             for raw_pred in raw_predictions:
-                if raw_pred["driver_name"] == driver_id:
-                    pred["driver_id"] = raw_pred["driver_id"]
+                if raw_pred["driver_name"] == driver_display:
+                    pred["driver_name"] = raw_pred["driver_name"]  # explicit
+                    pred["driver_id"]   = raw_pred["driver_id"]
                     pred["win_probability"] = raw_pred["win_probability"]
                     pred["top3_probability"] = raw_pred["top3_probability"]
                     pred["top10_probability"] = raw_pred["top10_probability"]
@@ -188,8 +190,9 @@ def generate_report(
     # Prepare chart data (top 10 drivers)
     top10 = predictions[:10]
     chart_data = {
-        "labels": [p["driver"].split()[-1] if " " in p.get("driver", "") else p.get("driver", "") for p in top10],
-        "full_names": [p.get("driver", "") for p in top10],
+        # FIX #2: Use driver_name consistently everywhere
+        "labels": [p["driver_name"].split()[-1] if " " in p.get("driver_name", "") else p.get("driver_name", "") for p in top10],
+        "full_names": [p.get("driver_name", "") for p in top10],
         "win_probs": [round(p.get("win_probability", 0) * 100, 1) for p in top10],
         "top3_probs": [round(p.get("top3_probability", 0) * 100, 1) for p in top10],
         "top10_probs": [round(p.get("top10_probability", 0) * 100, 1) for p in top10],
@@ -206,7 +209,8 @@ def generate_report(
     for p in predictions:
         pred_data = {
             "driver_id": p.get("driver_id", ""),
-            "driver_name": p.get("driver", ""),
+            # FIX #2: Use driver_name consistently
+            "driver_name": p.get("driver_name", ""),
             "team": p.get("team", ""),
             "display_position": p.get("display_position", 0),
             "win_pct": round(p.get("win_probability", 0) * 100, 1),
@@ -225,7 +229,8 @@ def generate_report(
     podium_data = []
     for p in predictions[:3]:
         podium_data.append({
-            "driver_name": p.get("driver", ""),
+            # FIX #2: Use driver_name consistently
+            "driver_name": p.get("driver_name", ""),
             "win_probability": p.get("win_probability", 0),
             "team": p.get("team", ""),
         })

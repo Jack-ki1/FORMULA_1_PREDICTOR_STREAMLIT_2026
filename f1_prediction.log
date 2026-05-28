@@ -1,0 +1,5 @@
+2026-05-28 15:17:02,293 engine.predictor ERROR predict_race failed for spain: 'dnf_probability'
+2026-05-28 15:24:25,504 engine.predictor ERROR predict_race failed for spain: 'dnf_probability'
+2026-05-28 15:24:28,111 engine.predictor ERROR predict_race failed for spain: 'dnf_probability'
+2026-05-28 15:30:49,229 engine.predictor ERROR predict_race failed for spain: 'dnf_probability'
+2026-05-28 15:35:24,054 engine.predictor ERROR predict_race failed for spain: cannot use 'dict' as a dict key (unhashable type: 'dict')

@@ -1,10 +1,22 @@
+import logging
 import streamlit as st
+
+# FIX #23: Configure structured logging for the application
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("f1_prediction.log"),
+    ]
+)
 
 from pages.predictions import show as show_predictions
 from pages.live_data import show as show_live_data
 from pages.driver_analytics import show as show_driver_analytics
 from pages.circuit_analysis import show as show_circuit_analysis
 from pages.comparisons import show as show_comparisons
+from pages.model_accuracy import show as show_model_accuracy
 
 
 def _inject_2026_theme() -> None:
@@ -156,6 +168,7 @@ def main() -> None:
             "Driver Analytics",
             "Circuit Analysis",
             "Comparisons",
+            "Model Accuracy 📊",
         ],
         index=0,
     )
@@ -174,8 +187,10 @@ def main() -> None:
             show_driver_analytics()
         elif module.startswith("Circuit Analysis"):
             show_circuit_analysis()
-        else:
+        elif module.startswith("Comparisons"):
             show_comparisons()
+        else:
+            show_model_accuracy()
 
         st.markdown("</div>", unsafe_allow_html=True)
 
