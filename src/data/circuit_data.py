@@ -609,6 +609,97 @@ def circuit_favors_team(circuit_id: str, team: str) -> float:
     return 1.0
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 4: FASTF1 CIRCUIT DATABASE REFRESH
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def refresh_circuits_from_fastf1(seasons: Optional[List[int]] = None) -> int:
+    """
+    Refresh circuit stats from FastF1 historical race data.
+
+    Updates the in-memory CIRCUITS dict with:
+      - safety_car_probability (from actual SC frequency)
+      - rain_probability_typical (from actual rainfall frequency)
+      - tire_deg_rate (from observed degradation patterns)
+
+    Args:
+        seasons: List of years to analyse (default: last 3 years)
+
+    Returns:
+        Number of circuits successfully updated
+
+    Safe to call even if FastF1 is unavailable — returns 0 on failure.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    if seasons is None:
+        seasons = [2025, 2024, 2023]
+
+    updated = 0
+    try:
+        from src.data.fastf1_integration import FASTF1_AVAILABLE, get_circuit_historical_stats
+        if not FASTF1_AVAILABLE:
+            logger.warning("FastF1 not available — circuit database unchanged")
+            return 0
+
+        # Build circuit name → circuit_id mapping
+        name_to_id = {}
+        for cid, cdata in CIRCUITS.items():
+            name_to_id[cdata["name"]] = cid
+            # Also map by city for circuits with different official names
+            name_to_id[cdata.get("city", "")] = cid
+
+        for cid, cdata in CIRCUITS.items():
+            try:
+                stats = get_circuit_historical_stats(cdata["name"], seasons)
+                if stats.get("races_analysed", 0) == 0:
+                    continue
+
+                # Update safety car probability from actual data
+                if "safety_car_frequency" in stats:
+                    # Blend: 60% FastF1 data, 40% existing static value
+                    old_val = cdata.get("safety_car_probability", 0.3)
+                    cdata["safety_car_probability"] = round(
+                        0.6 * stats["safety_car_frequency"] + 0.4 * old_val, 3
+                    )
+
+                # Update rain probability from actual data
+                if "avg_rainfall" in stats:
+                    old_val = cdata.get("rain_probability_typical", 0.2)
+                    cdata["rain_probability_typical"] = round(
+                        0.6 * stats["avg_rainfall"] + 0.4 * old_val, 3
+                    )
+
+                updated += 1
+                logger.info(
+                    f"  {cid}: SC={cdata['safety_car_probability']:.2f}, "
+                    f"Rain={cdata['rain_probability_typical']:.2f} "
+                    f"(from {stats['races_analysed']} races)"
+                )
+
+            except Exception as e:
+                logger.warning(f"  {cid}: skipped — {e}")
+                continue
+
+        logger.info(f"FastF1 circuit refresh: updated {updated}/{len(CIRCUITS)} circuits")
+
+    except ImportError:
+        logger.warning("FastF1 module not found — circuit database unchanged")
+    except Exception as e:
+        logger.error(f"FastF1 circuit refresh failed: {e}")
+
+    return updated
+
+
 # ── EXPORT ──────────────────────────────────────────────────────────────────────
 
-__all__ = ["CIRCUITS", "get_circuit", "get_all_circuits", "circuit_favors_team"]
+__all__ = [
+    "CIRCUITS",
+    "get_circuit",
+    "get_all_circuits",
+    "circuit_favors_team",
+    # Phase 4 addition
+    "refresh_circuits_from_fastf1",
+]

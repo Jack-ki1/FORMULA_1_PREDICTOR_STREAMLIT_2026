@@ -272,11 +272,148 @@ def get_elo_system() -> MultiDimensionalELO:
         _elo_system = MultiDimensionalELO()
         
         # Initialize with current drivers
-        from data.driver_data import get_all_drivers
+        from src.data.driver_data import get_all_drivers
         for driver in get_all_drivers():
             _elo_system.initialize_driver(driver["id"], base_rating=driver.get("elo", 1500))
     
     return _elo_system
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 8: FASTF1 ELO INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def ingest_fastf1_results(season: int, race_name: str) -> int:
+    """
+    Pull actual race results from FastF1 and update ELO ratings.
+
+    This replaces simulated results with real finishing orders,
+    enabling accurate mid-season ELO drift tracking.
+
+    Args:
+        season: Year (e.g., 2025)
+        race_name: Race name or round number
+
+    Returns:
+        Number of drivers whose ELO was updated
+
+    Safe to call even if FastF1 is unavailable — returns 0 on failure.
+    """
+    elo = get_elo_system()
+
+    try:
+        from src.data.fastf1_integration import FASTF1_AVAILABLE, get_session
+        if not FASTF1_AVAILABLE:
+            logger.warning("FastF1 not available — ELO unchanged")
+            return 0
+
+        session = get_session(season, race_name, 'R')
+        results = session.results
+
+        # Build abbreviation → driver_id mapping
+        from src.data.driver_data import DRIVERS
+        abbr_to_id = {d["short"].upper(): d["id"] for d in DRIVERS.values()}
+
+        race_results = []
+        for _, row in results.iterrows():
+            abbr = row['Abbreviation']
+            driver_id = abbr_to_id.get(abbr)
+            if driver_id is None:
+                continue
+
+            pos = row.get('Position', None)
+            if not isinstance(pos, (int, float)) or pos <= 0:
+                continue
+
+            # Determine grid position from qualifying
+            grid_pos = int(pos)  # Fallback: use finish pos as grid pos
+            try:
+                q_session = get_session(season, race_name, 'Q')
+                q_results = q_session.results
+                q_row = q_results[q_results['Abbreviation'] == abbr]
+                if len(q_row) > 0:
+                    q_pos = q_row.iloc[0].get('Position', None)
+                    if isinstance(q_pos, (int, float)) and q_pos > 0:
+                        grid_pos = int(q_pos)
+            except Exception:
+                pass
+
+            race_results.append({
+                "driver_id": driver_id,
+                "grid_pos": grid_pos,
+                "finish_pos": int(pos),
+                "quali_pos": grid_pos,
+            })
+
+        if not race_results:
+            logger.warning(f"No valid results found for {season} {race_name}")
+            return 0
+
+        # Determine weather conditions
+        weather_conditions = "dry"
+        try:
+            weather = session.weather_data
+            if 'Rainfall' in weather.columns and weather['Rainfall'].any():
+                weather_conditions = "wet"
+        except Exception:
+            pass
+
+        # Update ELO ratings
+        elo.update_ratings_after_race(race_results, weather_conditions=weather_conditions)
+
+        logger.info(
+            f"ELO updated from FastF1: {len(race_results)} drivers, "
+            f"weather={weather_conditions}"
+        )
+        return len(race_results)
+
+    except ImportError:
+        logger.warning("FastF1 module not found — ELO unchanged")
+        return 0
+    except Exception as e:
+        logger.error(f"FastF1 ELO ingestion failed: {e}")
+        return 0
+
+
+def ingest_season_elo(season: int, max_round: Optional[int] = None) -> int:
+    """
+    Ingest all race results for a season and update ELO ratings sequentially.
+
+    Args:
+        season: Year (e.g., 2025)
+        max_round: Only process races up to this round number
+
+    Returns:
+        Total number of driver-race ELO updates
+    """
+    try:
+        from src.data.fastf1_integration import FASTF1_AVAILABLE
+        if not FASTF1_AVAILABLE:
+            return 0
+
+        import fastf1
+        schedule = fastf1.get_event_schedule(season)
+        if max_round is not None:
+            schedule = schedule[schedule['RoundNumber'] <= max_round]
+
+        total_updates = 0
+        for _, event in schedule.iterrows():
+            if event['EventName'] == 'Pre-Season Test':
+                continue
+            try:
+                updates = ingest_fastf1_results(season, event['EventName'])
+                total_updates += updates
+            except Exception as e:
+                logger.warning(f"Skipping {event['EventName']}: {e}")
+                continue
+
+        logger.info(f"Season ELO ingestion complete: {total_updates} total updates")
+        return total_updates
+
+    except Exception as e:
+        logger.error(f"Season ELO ingestion failed: {e}")
+        return 0
 
 
 if __name__ == "__main__":

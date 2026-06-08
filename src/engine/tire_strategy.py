@@ -68,7 +68,28 @@ class TireStrategyModel:
         
         # Circuit-specific tire degradation multipliers
         self.circuit_degradation_factors = self._get_circuit_tire_factors()
-    
+
+        # ── Phase 5: FastF1 degradation data ──
+        self._fastf1_degradation = self._load_fastf1_degradation()
+
+    def _load_fastf1_degradation(self) -> dict:
+        """
+        Load FastF1-derived degradation slopes for this circuit.
+        Returns dict keyed by compound with slope values, or empty dict.
+        """
+        try:
+            from src.data.fastf1_integration import FASTF1_AVAILABLE
+            if not FASTF1_AVAILABLE:
+                return {}
+
+            # Check if feature_engineering cache has degradation data
+            from src.engine.feature_engineering import _FASTF1_CACHE
+            # Degradation data would be populated via refresh_fastf1_cache
+            # For now, return empty — will be populated when cache is refreshed
+            return _FASTF1_CACHE.get("tyre_degradation", {}).get(self.circuit_id, {})
+        except Exception:
+            return {}
+
     def _get_circuit_tire_factors(self) -> Dict[str, float]:
         """
         Get tire degradation factors specific to each circuit.
@@ -99,6 +120,7 @@ class TireStrategyModel:
                                   stint_length: int, temperature_c: float = 25.0) -> float:
         """
         Calculate tire performance factor for a given lap.
+        Enhanced with FastF1 degradation data when available.
         
         Args:
             compound: Tire compound ("soft", "medium", "hard", etc.)
@@ -116,6 +138,16 @@ class TireStrategyModel:
         
         # Base degradation
         degradation = tire_data["degradation_rate"]
+
+        # ── Phase 5: Override with FastF1 degradation slope if available ──
+        ff_data = self._fastf1_degradation.get(compound, {})
+        if ff_data and "slope" in ff_data:
+            # FastF1 slope is in seconds/lap; convert to relative degradation rate
+            # Use the slope directly: each lap loses `slope` seconds
+            # Normalize by typical lap time (~90s) to get relative rate
+            ff_rate = abs(ff_data["slope"]) / 90.0  # relative degradation per lap
+            # Blend: 60% FastF1, 40% static estimate
+            degradation = 0.6 * ff_rate + 0.4 * degradation
         
         # Apply circuit-specific factor
         circuit_factor = self.circuit_degradation_factors.get(self.circuit_id, 1.0)

@@ -691,3 +691,87 @@ __all__ = [
     "get_drivers_for_team", 
     "calculate_circuit_performance_modifier"
 ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 3: FASTF1 DRIVER DATABASE REFRESH
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def refresh_from_fastf1(season: int = 2025, round_num: Optional[int] = None) -> int:
+    """
+    Refresh driver stats from FastF1 race results.
+
+    Updates the in-memory DRIVERS dict with:
+      - championship_points_2026
+      - recent_form (last 3 finishing positions)
+      - dnf_rate_recent (from actual DNF count)
+
+    Args:
+        season: Year to pull data from
+        round_num: Only include races up to this round (None = all)
+
+    Returns:
+        Number of drivers successfully updated
+
+    Safe to call even if FastF1 is unavailable — returns 0 on failure.
+    """
+    updated = 0
+    try:
+        from src.data.fastf1_integration import FASTF1_AVAILABLE, refresh_driver_database
+        if not FASTF1_AVAILABLE:
+            logger.warning("FastF1 not available — driver database unchanged")
+            return 0
+
+        ff_data = refresh_driver_database(season, round_num)
+        if not ff_data:
+            return 0
+
+        # Build abbreviation → driver_id mapping
+        abbr_to_id = {d["short"].upper(): d["id"] for d in DRIVERS.values()}
+
+        for abbr, stats in ff_data.items():
+            driver_id = abbr_to_id.get(abbr)
+            if driver_id is None:
+                continue
+
+            driver = DRIVERS.get(driver_id)
+            if driver is None:
+                continue
+
+            # Update championship points
+            if "points" in stats:
+                driver["championship_points_2026"] = stats["points"]
+
+            # Update recent form (last 3 finishing positions)
+            if "last_3_results" in stats and stats["last_3_results"]:
+                driver["recent_form"] = stats["last_3_results"]
+
+            # Update recent DNF rate
+            total = stats.get("total_races", 1)
+            if total > 0:
+                driver["dnf_rate_recent"] = round(stats["dnf_count"] / total, 3)
+
+            updated += 1
+
+        logger.info(f"FastF1 refresh: updated {updated}/{len(DRIVERS)} drivers")
+
+    except ImportError:
+        logger.warning("FastF1 module not found — driver database unchanged")
+    except Exception as e:
+        logger.error(f"FastF1 driver refresh failed: {e}")
+
+    return updated
+
+
+# ── EXPORT ──────────────────────────────────────────────────────────────────────
+
+__all__ = [
+    "DRIVERS",
+    "get_driver",
+    "get_all_drivers",
+    "get_drivers_for_team",
+    "calculate_circuit_performance_modifier",
+    # Phase 3 addition
+    "refresh_from_fastf1",
+]

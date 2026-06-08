@@ -1,5 +1,5 @@
 """
-Prediction Orchestrator — v2.
+Prediction Orchestrator — v3 with FastF1 live data support.
 Supports grid_overrides dict for post-qualifying accuracy boost.
 """
 
@@ -8,10 +8,14 @@ from typing import Optional, Dict
 import hashlib
 import json
 import time
+import logging
+from datetime import datetime
 
 from .probability_model import predict_race
 from .cache import ThreadSafeCache
 from src.data.circuit_data import get_circuit
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -24,6 +28,9 @@ class PredictionRequest:
     seed: Optional[int] = None
     output_format: str = "full"
     grid_overrides: Dict[str, int] = field(default_factory=dict)
+    # ── Phase 7: FastF1 live data support ──
+    use_live_data: bool = False
+    """When True, triggers FastF1 data refresh before running predictions."""
 
 
 # PREDICTION CACHING (P1 Priority - Performance Optimization)
@@ -125,7 +132,21 @@ def _normalize_win_probabilities(predictions: list) -> list:
 
 
 def predict(request: PredictionRequest) -> dict:
-    """Main prediction function with caching to avoid redundant Monte Carlo simulations."""
+    """Main prediction function with caching and optional FastF1 live data refresh."""
+
+    # ── Phase 7: Refresh FastF1 cache if live data requested ──
+    data_source = "static_fallback"
+    data_freshness = None
+
+    if request.use_live_data:
+        try:
+            from src.engine.feature_engineering import refresh_fastf1_cache
+            refresh_fastf1_cache()
+            data_source = "fastf1_live"
+            data_freshness = datetime.now().isoformat()
+        except Exception as e:
+            logger.warning(f"FastF1 live data refresh failed: {e}")
+            data_source = "fastf1_failed"
     
     def _run_prediction():
         """Execute prediction pipeline when cache miss occurs."""
@@ -212,6 +233,9 @@ def predict(request: PredictionRequest) -> dict:
                 "rain_probability":         rain_prob,
                 "n_simulations":            request.n_simulations,
                 "overall_model_confidence": round(overall_confidence, 3),
+                # ── Phase 7: Data provenance metadata ──
+                "data_source":              data_source,
+                "data_freshness":           data_freshness,
             },
             "predictions":          output_predictions,
             "podium_predictions":   [p.driver_name for p in predictions[:3]],

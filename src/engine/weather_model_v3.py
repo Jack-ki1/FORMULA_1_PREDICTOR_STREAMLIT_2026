@@ -29,7 +29,40 @@ class WeatherModel:
         """
         self.api_key = api_key or os.getenv("WEATHER_API_KEY")
         self.base_url = "https://api.openweathermap.org/data/2.5"
-    
+
+        # ── Phase 6: FastF1 historical weather cache ──
+        self._fastf1_weather: Dict = {}
+
+    def load_fastf1_weather(self, circuit_id: str, seasons: Optional[list] = None):
+        """
+        Load historical weather data from FastF1 for a circuit.
+        Populates _fastf1_weather with avg temps, rain frequency, etc.
+
+        Safe to call even if FastF1 is unavailable.
+        """
+        if seasons is None:
+            seasons = [2025, 2024, 2023]
+        try:
+            from src.data.fastf1_integration import FASTF1_AVAILABLE, get_circuit_historical_stats
+            from src.data.circuit_data import get_circuit
+
+            if not FASTF1_AVAILABLE:
+                return
+
+            circuit = get_circuit(circuit_id)
+            stats = get_circuit_historical_stats(circuit["name"], seasons)
+            if stats.get("races_analysed", 0) > 0:
+                self._fastf1_weather = {
+                    "rain_frequency": stats.get("avg_rainfall", 0.2),
+                    "sc_frequency": stats.get("safety_car_frequency", 0.3),
+                }
+                logger.info(
+                    f"FastF1 weather loaded for {circuit_id}: "
+                    f"rain_freq={self._fastf1_weather['rain_frequency']:.2f}"
+                )
+        except Exception as e:
+            logger.warning(f"FastF1 weather load failed for {circuit_id}: {e}")
+
     def get_forecast(self, lat: float, lon: float, race_date: str) -> Dict:
         """
         Get detailed weather forecast for race weekend.
@@ -93,13 +126,19 @@ class WeatherModel:
             return self._get_default_forecast()
     
     def _get_default_forecast(self) -> Dict:
-        """Return default forecast when API unavailable."""
+        """Return default forecast when API unavailable, enhanced with FastF1 historical data."""
+        # ── Phase 6: Use FastF1 historical data to improve defaults ──
+        rain_prob = 0.2
+        if self._fastf1_weather:
+            rain_prob = self._fastf1_weather.get("rain_frequency", 0.2)
+
         return {
             "race_date": datetime.now().strftime("%Y-%m-%d"),
             "hourly_forecast": [],
-            "max_rain_probability": 0.2,
+            "max_rain_probability": rain_prob,
             "avg_temperature": 20.0,
             "avg_humidity": 50.0,
+            "data_source": "fastf1_historical" if self._fastf1_weather else "static_default",
         }
     
     def compute_tire_degradation_factor(self, temperature: float, humidity: float) -> float:
@@ -173,12 +212,13 @@ class WeatherModel:
 def get_weather_for_circuit(circuit_id: str, race_date: str) -> Dict:
     """
     Convenience function to get weather for a specific circuit.
+    Enhanced with FastF1 historical weather data.
     
     Usage:
         weather = get_weather_for_circuit("canada", "2026-06-14")
         print(f"Rain probability: {weather['max_rain_probability']}")
     """
-    from data.circuit_data import get_circuit
+    from src.data.circuit_data import get_circuit
     
     circuit = get_circuit(circuit_id)
     
@@ -194,16 +234,21 @@ def get_weather_for_circuit(circuit_id: str, race_date: str) -> Dict:
     lat, lon = circuit_coords.get(circuit_id, (50.0, 0.0))
     
     weather_model = WeatherModel()
+
+    # ── Phase 6: Load FastF1 historical weather first ──
+    weather_model.load_fastf1_weather(circuit_id)
+
     return weather_model.get_forecast(lat, lon, race_date)
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
-    print("Testing weather model...")
+    print("Testing weather model v3 + FastF1...")
     weather = get_weather_for_circuit("canada", "2026-06-14")
     
     print(f"Race date: {weather['race_date']}")
     print(f"Max rain probability: {weather['max_rain_probability']:.0%}")
     print(f"Avg temperature: {weather['avg_temperature']:.1f}°C")
     print(f"Avg humidity: {weather['avg_humidity']:.0f}%")
+    print(f"Data source: {weather.get('data_source', 'live_api')}")
