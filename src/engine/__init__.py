@@ -7,9 +7,10 @@ Public API:
   - simulate_race(): Low-level race simulation
 """
 
-from f1_predictor.engine.predictor import predict, PredictionRequest, DriverPrediction
-from f1_predictor.engine.probability_model import simulate_race, apply_platt, get_field_size
-from f1_predictor.engine.feature_engineering import (
+from .predictor import predict, PredictionRequest, DriverPrediction
+from .probability_model import simulate_race, apply_platt, get_field_size
+from .feature_engineering import (
+
     compute_all_drivers,
     compute_composite_score,
     compute_elo_score,

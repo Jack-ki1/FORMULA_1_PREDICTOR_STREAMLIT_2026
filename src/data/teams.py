@@ -5,7 +5,7 @@ Provides a single source of truth for team identifiers across the codebase.
 Prevents mismatches between driver_data.py, feature_engineering.py, and season_2026.py.
 
 Usage:
-    from f1_predictor.data.teams import normalize_team
+    from data.teams import normalize_team
     
     # Normalize various team name formats to canonical ID
     team_id = normalize_team("racing_bulls")  # Returns "rb"

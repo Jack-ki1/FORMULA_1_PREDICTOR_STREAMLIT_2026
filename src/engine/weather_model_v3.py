@@ -178,7 +178,7 @@ def get_weather_for_circuit(circuit_id: str, race_date: str) -> Dict:
         weather = get_weather_for_circuit("canada", "2026-06-14")
         print(f"Rain probability: {weather['max_rain_probability']}")
     """
-    from f1_predictor.data.circuit_data import get_circuit
+    from data.circuit_data import get_circuit
     
     circuit = get_circuit(circuit_id)
     

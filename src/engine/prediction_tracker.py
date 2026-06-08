@@ -13,8 +13,9 @@ from typing import Dict, List, Optional
 from datetime import datetime
 import json
 
-from f1_predictor.database.models import SessionLocal, Prediction, Race, Driver, init_db
-from f1_predictor.engine.predictor import predict, PredictionRequest
+from src.database.models import SessionLocal, Prediction, Race, Driver, init_db
+from .predictor import predict, PredictionRequest
+
 
 
 logger = logging.getLogger(__name__)

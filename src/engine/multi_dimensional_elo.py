@@ -272,7 +272,7 @@ def get_elo_system() -> MultiDimensionalELO:
         _elo_system = MultiDimensionalELO()
         
         # Initialize with current drivers
-        from f1_predictor.data.driver_data import get_all_drivers
+        from data.driver_data import get_all_drivers
         for driver in get_all_drivers():
             _elo_system.initialize_driver(driver["id"], base_rating=driver.get("elo", 1500))
     

@@ -26,7 +26,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 
 # Database URL — can be overridden via environment variable
-DATABASE_URL = os.getenv("F1_DATABASE_URL", "sqlite:///f1_predictor.db")
+DATABASE_URL = os.getenv("F1_DATABASE_URL", "sqlite:///db")
 
 engine = create_engine(DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -305,9 +305,9 @@ def migrate_from_static() -> None:
 
     from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-    from f1_predictor.data.circuit_data import get_all_circuits as static_circuits
-    from f1_predictor.data.driver_data import get_all_drivers as static_drivers
-    from f1_predictor.data.season_2026 import (
+    from data.circuit_data import get_all_circuits as static_circuits
+    from data.driver_data import get_all_drivers as static_drivers
+    from data.season_2026 import (
         CONSTRUCTOR_STANDINGS_AFTER_R5,
         DRIVER_STANDINGS_AFTER_R5,
     )

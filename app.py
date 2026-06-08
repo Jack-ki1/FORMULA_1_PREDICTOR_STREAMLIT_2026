@@ -9,12 +9,12 @@ from theme import (
     bar_colors_from_teams,
 )
 
-from f1_predictor.engine.predictor import predict as run_predict, PredictionRequest
-from f1_predictor.engine.probability_model import predict_race
-from f1_predictor.engine.prediction_tracker import PredictionTracker
-from f1_predictor.data.circuit_data import get_all_circuits, CIRCUITS
-from f1_predictor.data.driver_data import get_all_drivers
-from f1_predictor.reports.html_report import generate_report
+from src.engine.predictor import predict as run_predict, PredictionRequest
+from src.engine.probability_model import predict_race
+from src.engine.prediction_tracker import PredictionTracker
+from src.data.circuit_data import get_all_circuits, CIRCUITS
+from src.data.driver_data import get_all_drivers
+from src.reports.html_report import generate_report
 
 
 st.set_page_config(
@@ -38,7 +38,7 @@ def clamp_int(x: int, lo: int, hi: int) -> int:
 @st.cache_resource(show_spinner=False)
 def load_prediction_model():
     """Load prediction model once and cache across sessions."""
-    from f1_predictor.engine.predictor import predict as run_predict_fn
+    from src.engine.predictor import predict as run_predict_fn
 
     return run_predict_fn
 
@@ -643,7 +643,7 @@ def render_championship_mode(circuit_ids: list[str], sims: int, rain_probability
 
     with st.spinner("Running season simulation…"):
         try:
-            from f1_predictor.data.calendar_2026 import get_upcoming_races
+            from src.data.calendar_2026 import get_upcoming_races
 
             remaining_races = get_upcoming_races()[: int(remaining)]
 

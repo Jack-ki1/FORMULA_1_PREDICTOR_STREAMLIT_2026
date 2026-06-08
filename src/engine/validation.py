@@ -6,7 +6,7 @@ the prediction engine, preventing invalid data from causing silent failures.
 """
 from dataclasses import dataclass
 from typing import Optional
-from f1_predictor.data.circuit_data import CIRCUITS
+from data.circuit_data import CIRCUITS
 
 
 class ValidationError(ValueError):

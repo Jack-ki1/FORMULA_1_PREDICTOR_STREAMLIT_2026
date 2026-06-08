@@ -22,10 +22,11 @@ import numpy as np
 from typing import Optional, List
 import logging
 
-from f1_predictor.engine.feature_engineering import compute_all_drivers, estimate_dnf_probability
-from f1_predictor.data.driver_data import get_all_drivers, get_driver
+from src.engine.feature_engineering import compute_all_drivers, estimate_dnf_probability
+from src.data.driver_data import get_all_drivers, get_driver
 # BUG-02 FIX: Move circuit data fetch outside simulation loop - no need to call importlib 5000 times
-from f1_predictor.data.circuit_data import get_circuit as _get_circuit
+from src.data.circuit_data import get_circuit as _get_circuit
+
 
 # Set up structured logging
 logger = logging.getLogger(__name__)
@@ -203,8 +204,10 @@ def simulate_race(
 
     # FEATURE-2: Initialize tire strategy model
     try:
-        from f1_predictor.engine.tire_strategy import TireStrategyModel
+        from src.engine.tire_strategy import TireStrategyModel
+
         tire_model = TireStrategyModel(circuit_id, circuit_laps)
+
         
         # Pre-compute optimal strategies for each driver based on team/car characteristics
         driver_strategies = {}
@@ -410,8 +413,9 @@ def predict_race(
     FIX-3.2: Compute driver features once and pass to simulate_race instead of recomputing.
     FEATURE-16: Include confidence intervals in predictions.
     """
-    from f1_predictor.engine.feature_engineering import compute_composite_score, compute_teammate_beat_probability
-    from f1_predictor.data.driver_data import get_all_drivers as _get_all
+    from src.engine.feature_engineering import compute_composite_score, compute_teammate_beat_probability
+    from src.data.driver_data import get_all_drivers as _get_all
+
     
     import time
     t0 = time.perf_counter()

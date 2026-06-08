@@ -4,7 +4,8 @@ Database Layer — F1 Predictor v3.0.
 Provides SQLAlchemy ORM models and database initialization utilities.
 """
 
-from f1_predictor.database.models import (
+from .models import (
+
     Base,
     Driver,
     Constructor,

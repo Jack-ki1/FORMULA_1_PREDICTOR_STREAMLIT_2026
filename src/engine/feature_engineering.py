@@ -2,7 +2,7 @@
 
 This file had merge-conflict markers that made the project fail to import.
 The implementation below is a clean, conflict-free version compatible with
-`f1_predictor.engine.probability_model`.
+`engine.probability_model`.
 """
 
 from __future__ import annotations
@@ -13,16 +13,18 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from f1_predictor.config.settings import FEATURE_WEIGHTS, RECENCY_DECAY, RECENCY_WINDOW
-from f1_predictor.data.circuit_data import circuit_favors_team, get_circuit
-from f1_predictor.data.driver_data import (
+from src.config.settings import FEATURE_WEIGHTS, RECENCY_DECAY, RECENCY_WINDOW
+from src.data.circuit_data import circuit_favors_team, get_circuit
+from src.data.driver_data import (
+
     calculate_circuit_performance_modifier,
     get_all_drivers,
     get_driver,
     get_drivers_for_team,
 )
-from f1_predictor.data.season_2026 import DRIVER_STANDINGS_AFTER_R5, get_driver_last_n_results
-from f1_predictor.data.teams import normalize_team
+from src.data.season_2026 import DRIVER_STANDINGS_AFTER_R5, get_driver_last_n_results
+from src.data.teams import normalize_team
+
 
 
 N_DRIVERS = 22
@@ -39,7 +41,7 @@ def compute_elo_score(driver_id: str) -> float:
     """Compute a normalized ELO score in [0,1]."""
     try:
         try:
-            from f1_predictor.engine.multi_dimensional_elo import get_elo_system
+            from engine.multi_dimensional_elo import get_elo_system
 
             elo_system = get_elo_system()
             raw_elo = elo_system.drivers.get(driver_id, {}).get("race", {}).get("rating", 1500.0)

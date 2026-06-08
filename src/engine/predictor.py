@@ -9,9 +9,11 @@ import hashlib
 import json
 import time
 
-from f1_predictor.data.circuit_data import get_circuit
-from f1_predictor.engine.probability_model import predict_race
-from f1_predictor.engine.cache import ThreadSafeCache
+from .probability_model import predict_race
+from .cache import ThreadSafeCache
+from src.data.circuit_data import get_circuit
+
+
 
 
 @dataclass
