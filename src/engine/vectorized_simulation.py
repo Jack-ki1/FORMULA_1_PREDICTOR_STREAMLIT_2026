@@ -9,9 +9,9 @@ import numpy as np
 import logging
 from typing import Optional, Dict, List
 
-from engine.feature_engineering import compute_all_drivers
-from data.driver_data import get_all_drivers
-from data.circuit_data import get_circuit
+from src.engine.feature_engineering import compute_all_drivers
+from src.data.driver_data import get_all_drivers
+from src.data.circuit_data import get_circuit
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +197,7 @@ def compare_performance(
     t_vec = time.perf_counter() - t0
     
     # Test original version
-    from engine.probability_model import simulate_race
+    from src.engine.probability_model import simulate_race
     t0 = time.perf_counter()
     result_orig = simulate_race(circuit_id, n_runs=n_runs, seed=seed)
     t_orig = time.perf_counter() - t0

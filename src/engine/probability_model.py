@@ -100,7 +100,28 @@ def apply_platt(raw_prob: float, outcome_type: str) -> float:
     return 1.0 / (1.0 + math.exp(-(params["A"] * log_odds + params["B"])))
 
 
+def _is_platt_calibration_fitted() -> bool:
+    """Return whether Platt calibration should be applied.
+
+    Current repo ships PLACEHOLDER calibration parameters; applying them as if fitted
+    would create a false sense of trust.
+
+    Toggle via env var:
+      - PLATT_CALIBRATION_ENABLED=1 to enable
+    """
+    import os
+
+    return os.getenv("PLATT_CALIBRATION_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _maybe_apply_platt(raw_prob: float, outcome_type: str) -> float:
+    if not _is_platt_calibration_fitted():
+        return raw_prob
+    return apply_platt(raw_prob, outcome_type)
+
+
 def _softmax(scores: List[float], temperature: float = 0.28) -> List[float]:
+
     """Temperature-scaled numerically stable softmax."""
     if not scores:
         return []
@@ -482,16 +503,24 @@ def predict_race(
     # 1. Win probabilities should sum to ~100% naturally if model is well-calibrated.
     # 2. Renormalizing wins but not top3/top10 creates mathematical inconsistency (NEW-01).
     # 3. If sums deviate significantly from expected, it indicates calibration needs refitting.
+    calibration_enabled = _is_platt_calibration_fitted()
+
     for pred in predictions:
-        pred["win_probability"]  = apply_platt(pred["win_probability"],  "win")
-        pred["top3_probability"] = apply_platt(pred["top3_probability"], "top3")
-        pred["top10_probability"]= apply_platt(pred["top10_probability"],"top10")
-        pred["dnf_probability"]  = apply_platt(pred["dnf_probability"],  "dnf")
+        pred["win_probability"]  = _maybe_apply_platt(pred["win_probability"],  "win")
+        pred["top3_probability"] = _maybe_apply_platt(pred["top3_probability"], "top3")
+        pred["top10_probability"]= _maybe_apply_platt(pred["top10_probability"],"top10")
+        pred["dnf_probability"]  = _maybe_apply_platt(pred["dnf_probability"],  "dnf")
+
 
     return {
         "circuit_id":       circuit_id,
         "rain_probability": rain_probability,
         "n_simulations":    n_simulations,
         "predictions":      predictions,
+        "meta": {
+            "platt_calibration_enabled": calibration_enabled,
+            "platt_calibration_source": "env:PLATT_CALIBRATION_ENABLED (placeholder params gated)",
+        },
     }
+
 

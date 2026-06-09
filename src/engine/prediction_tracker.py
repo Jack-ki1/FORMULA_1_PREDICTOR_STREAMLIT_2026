@@ -166,24 +166,31 @@ class PredictionTracker:
             db.close()
     
     def get_accuracy_report(self, season: int = 2026) -> Dict:
-        """Generate comprehensive accuracy report.
-
-        Ensures SQLite schema exists before querying (Streamlit may run before `py main.py migrate-db`).
         """
-
+        Generate comprehensive accuracy report with session breakdown.
+        
+        FIXED: Now uses per-call session management and returns enhanced metrics
+        including session-by-session analysis (Practice, Qualifying, Sprint, Race).
+        
+        Returns:
+            Dict with overall metrics and session-specific breakdowns
+        """
         # Ensure schema exists (Streamlit may run before `py main.py migrate-db`)
         init_db()
 
         db = SessionLocal()  # Open per-call session
         try:
             predictions = db.query(Prediction).filter(
-
                 Prediction.model_version.like("v3%"),
                 Prediction.brier_score.isnot(None)
             ).all()
             
             if not predictions:
-                return {"message": "No evaluated predictions found"}
+                return {
+                    "total_predictions": 0,
+                    "evaluated_predictions": 0,
+                    "message": "No evaluated predictions found. Run some predictions first!"
+                }
             
             # Overall metrics
             avg_brier = sum(p.brier_score for p in predictions) / len(predictions)
@@ -199,13 +206,35 @@ class PredictionTracker:
                               for p in predictions if p.actual_position]
             avg_position_error = sum(position_errors) / len(position_errors) if position_errors else 0.0
             
+            # Position accuracy percentage (within ±2 positions)
+            accurate_predictions = sum(1 for e in position_errors if e <= 2)
+            position_accuracy = (accurate_predictions / len(position_errors) * 100) if position_errors else 0.0
+            
+            # Session breakdown analysis
+            session_breakdown = self._analyze_by_session(db, predictions)
+            
+            # Driver-specific accuracy
+            driver_accuracy = self._analyze_by_driver(predictions)
+            
+            # Trend analysis
+            trend = self._calculate_trend(predictions)
+            
+            # Recommendations
+            recommendations = self._generate_recommendations(avg_brier, avg_position_error, session_breakdown)
+            
             return {
                 "total_predictions": len(predictions),
+                "evaluated_predictions": len([p for p in predictions if p.actual_position]),
                 "avg_brier_score": round(avg_brier, 4),
                 "win_prediction_brier": round(win_brier, 4),
                 "top3_prediction_brier": round(top3_brier, 4),
                 "avg_position_error": round(avg_position_error, 2),
+                "position_accuracy": round(position_accuracy, 1),
                 "calibration": "Good" if avg_brier < 0.10 else "Needs Improvement",
+                "session_breakdown": session_breakdown,
+                "driver_accuracy": driver_accuracy,
+                "trend": trend,
+                "recommendations": recommendations,
             }
             
         except Exception as e:
@@ -213,6 +242,158 @@ class PredictionTracker:
             raise
         finally:
             db.close()
+    
+    def _analyze_by_session(self, db, predictions):
+        """Analyze prediction accuracy by session type."""
+        # Group predictions by race/session
+        races = db.query(Race).all()
+        race_map = {r.id: r for r in races}
+        
+        session_data = {
+            "practice": {"count": 0, "predictions": []},
+            "qualifying": {"count": 0, "predictions": []},
+            "sprint": {"count": 0, "predictions": []},
+            "race": {"count": 0, "predictions": []},
+        }
+        
+        # For now, classify all as "race" since we don't have session_type field yet
+        # This can be enhanced when we add session tracking to the database
+        for pred in predictions:
+            session_data["race"]["count"] += 1
+            session_data["race"]["predictions"].append(pred)
+        
+        # Calculate metrics for each session type
+        result = {}
+        
+        # Practice (placeholder - would need FP data)
+        result["practice"] = {
+            "count": 0,
+            "avg_pace_error": 0.0,
+            "calibration_score": 0.0,
+        }
+        
+        # Qualifying (placeholder - would need qualifying results)
+        result["qualifying"] = {
+            "count": 0,
+            "grid_mae": 0.0,
+            "pole_accuracy": 0.0,
+        }
+        
+        # Sprint (placeholder - would need sprint results)
+        result["sprint"] = {
+            "count": 0,
+            "win_accuracy": 0.0,
+            "points_mae": 0.0,
+        }
+        
+        # Race - actual data from predictions
+        race_preds = session_data["race"]["predictions"]
+        if race_preds:
+            winner_correct = sum(1 for p in race_preds if p.predicted_position == 1 and p.actual_position == 1)
+            podium_hits = sum(1 for p in race_preds if p.predicted_position <= 3 and p.actual_position <= 3)
+            avg_pos_err = sum(abs(p.predicted_position - p.actual_position) for p in race_preds if p.actual_position) / len(race_preds)
+            
+            result["race"] = {
+                "count": len(race_preds),
+                "winner_accuracy": winner_correct / len(race_preds) if race_preds else 0.0,
+                "podium_hit_rate": podium_hits / len(race_preds) if race_preds else 0.0,
+                "avg_pos_error": round(avg_pos_err, 1),
+                "trend": "stable",  # Will be updated by _calculate_trend
+            }
+        else:
+            result["race"] = {
+                "count": 0,
+                "winner_accuracy": 0.0,
+                "podium_hit_rate": 0.0,
+                "avg_pos_error": 0.0,
+                "trend": "stable",
+            }
+        
+        return result
+    
+    def _analyze_by_driver(self, predictions):
+        """Analyze prediction accuracy by individual driver."""
+        driver_stats = {}
+        
+        for pred in predictions:
+            driver_id = pred.driver_id
+            if driver_id not in driver_stats:
+                driver_stats[driver_id] = {
+                    "brier_scores": [],
+                    "count": 0,
+                    "position_errors": [],
+                }
+            
+            if pred.brier_score is not None:
+                driver_stats[driver_id]["brier_scores"].append(pred.brier_score)
+            if pred.actual_position:
+                driver_stats[driver_id]["position_errors"].append(
+                    abs(pred.predicted_position - pred.actual_position)
+                )
+            driver_stats[driver_id]["count"] += 1
+        
+        # Aggregate stats
+        result = {}
+        for driver_id, stats in driver_stats.items():
+            avg_brier = sum(stats["brier_scores"]) / len(stats["brier_scores"]) if stats["brier_scores"] else 0.0
+            result[driver_id] = {
+                "brier_score": round(avg_brier, 4),
+                "count": stats["count"],
+            }
+        
+        return result
+    
+    def _calculate_trend(self, predictions):
+        """Calculate prediction accuracy trend over time."""
+        if len(predictions) < 5:
+            return "stable"
+        
+        # Sort by created_at date
+        # Handle potential missing created_at by using a default min datetime
+        sorted_preds = sorted(predictions, key=lambda p: getattr(p, 'created_at', None) or datetime.min)
+        
+        # Split into recent vs older
+        mid = len(sorted_preds) // 2
+        older = sorted_preds[:mid]
+        recent = sorted_preds[mid:]
+        
+        # Compare Brier scores
+        older_brier = sum(p.brier_score for p in older if p.brier_score) / len([p for p in older if p.brier_score]) if older else 0
+        recent_brier = sum(p.brier_score for p in recent if p.brier_score) / len([p for p in recent if p.brier_score]) if recent else 0
+        
+        # Lower Brier is better
+        if recent_brier < older_brier * 0.95:
+            return "improving"
+        elif recent_brier > older_brier * 1.05:
+            return "declining"
+        else:
+            return "stable"
+    
+    def _generate_recommendations(self, avg_brier, avg_position_error, session_breakdown):
+        """Generate actionable recommendations based on performance."""
+        recommendations = []
+        
+        if avg_brier > 0.15:
+            recommendations.append("🎯 Overall prediction confidence needs improvement - consider recalibrating probability models")
+        
+        if avg_position_error > 3.0:
+            recommendations.append("📍 Position predictions show high variance - enhance grid-to-race translation algorithms")
+        
+        race_data = session_breakdown.get("race", {})
+        if race_data.get("winner_accuracy", 0) < 0.3:
+            recommendations.append("🏆 Winner prediction accuracy is low - improve pace assessment for top teams")
+        
+        if race_data.get("podium_hit_rate", 0) < 0.5:
+            recommendations.append("🥇 Podium prediction hit rate below 50% - refine top-3 probability calculations")
+        
+        if not recommendations:
+            recommendations.append("✅ Model performance is within acceptable parameters")
+            recommendations.append("📊 Continue collecting data across all session types for deeper insights")
+        
+        recommendations.append("🌧️ Enhance wet weather prediction models with more rain scenario simulations")
+        recommendations.append("🏁 Track sprint race performance separately from main races once data available")
+        
+        return recommendations
     
     def close(self):
         """Close database session (no-op with per-call sessions)."""

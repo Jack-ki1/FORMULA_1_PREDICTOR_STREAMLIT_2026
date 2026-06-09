@@ -113,7 +113,7 @@ def compute_elo_score(driver_id: str) -> float:
     """Compute a normalized ELO score in [0,1]."""
     try:
         try:
-            from engine.multi_dimensional_elo import get_elo_system
+            from src.engine.multi_dimensional_elo import get_elo_system
 
             elo_system = get_elo_system()
             raw_elo = elo_system.drivers.get(driver_id, {}).get("race", {}).get("rating", 1500.0)
@@ -382,19 +382,31 @@ def compute_grid_position_score(driver_id: str, actual_grid_pos: Optional[int] =
 # ── Teammate beat probability ──────────────────────────────────────────────────
 
 def compute_teammate_beat_probability(driver_id: str) -> float:
+    """Probability driver beats their teammate(s), averaged across all team-mates.
+
+    Avoids teammate-order bias by comparing against *every* other teammate in the team roster.
+    """
     try:
         driver = get_driver(driver_id)
         team = driver.get("team", "")
         teammates = get_drivers_for_team(team)
-        if len(teammates) < 2:
+        others = [t for t in teammates if t.get("id") != driver_id]
+        if not others:
             return 0.5
 
-        other = [t for t in teammates if t.get("id") != driver_id][0]
-        elo_diff = float(driver.get("elo", 1500)) - float(other.get("elo", 1500))
-        prob = 1.0 / (1.0 + math.exp(-elo_diff / 100))
-        return max(0.05, min(0.95, prob))
+        driver_elo = float(driver.get("elo", 1500))
+        probs = []
+        for other in others:
+            other_elo = float(other.get("elo", 1500))
+            elo_diff = driver_elo - other_elo
+            prob = 1.0 / (1.0 + math.exp(-elo_diff / 100))
+            probs.append(prob)
+
+        prob_avg = sum(probs) / len(probs)
+        return max(0.05, min(0.95, prob_avg))
     except Exception:
         return 0.5
+
 
 
 # ── DNF probability estimation ─────────────────────────────────────────────────

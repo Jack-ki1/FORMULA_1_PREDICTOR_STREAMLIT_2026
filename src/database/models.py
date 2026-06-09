@@ -305,9 +305,9 @@ def migrate_from_static() -> None:
 
     from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-    from data.circuit_data import get_all_circuits as static_circuits
-    from data.driver_data import get_all_drivers as static_drivers
-    from data.season_2026 import (
+    from src.data.circuit_data import get_all_circuits as static_circuits
+    from src.data.driver_data import get_all_drivers as static_drivers
+    from src.data.season_2026 import (
         CONSTRUCTOR_STANDINGS_AFTER_R5,
         DRIVER_STANDINGS_AFTER_R5,
     )

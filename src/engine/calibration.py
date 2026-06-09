@@ -124,7 +124,7 @@ def temporal_cross_validate(
 
 def permutation_feature_importance(driver_id: str, circuit_id: str,
                                     n_permutations: int = 20) -> dict:
-    from engine.feature_engineering import compute_composite_score
+    from src.engine.feature_engineering import compute_composite_score
     from config.settings import FEATURE_WEIGHTS
     import random
 

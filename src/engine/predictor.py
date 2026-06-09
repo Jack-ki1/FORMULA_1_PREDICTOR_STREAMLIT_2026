@@ -163,12 +163,10 @@ def predict(request: PredictionRequest) -> dict:
             grid_overrides=request.grid_overrides or {},
         )
 
-        # NEW: Apply probability hierarchy enforcement (3.5)
-        for p in raw["predictions"]:
-            _enforce_probability_hierarchy(p)
-        
-        # NEW: Normalize win probabilities to sum to 1.0 (3.6)
-        raw["predictions"] = _normalize_win_probabilities(raw["predictions"])
+        # Trust calibration / monotonicity coming from the simulation itself.
+        # Avoid post-hoc hierarchy enforcement + win-only renormalization, which can distort
+        # probability calibration and relative comparisons between drivers.
+
 
         predictions = []
         for p in raw["predictions"]:
@@ -225,18 +223,22 @@ def predict(request: PredictionRequest) -> dict:
 
         return {
             "meta": {
+
                 "circuit":                  circuit["name"],
                 "city":                     circuit["city"],
                 "race_date":                circuit["race_date"],
                 "sprint_weekend":           circuit.get("sprint_weekend", False),
                 "safety_car_probability":   sc_prob,
                 "rain_probability":         rain_prob,
-                "n_simulations":            request.n_simulations,
-                "overall_model_confidence": round(overall_confidence, 3),
+            "n_simulations":            request.n_simulations,
+            "overall_model_confidence": round(overall_confidence, 3),
+
                 # ── Phase 7: Data provenance metadata ──
                 "data_source":              data_source,
                 "data_freshness":           data_freshness,
+                "platt_calibration_enabled": bool(raw.get("meta", {}).get("platt_calibration_enabled", False)),
             },
+
             "predictions":          output_predictions,
             "podium_predictions":   [p.driver_name for p in predictions[:3]],
             "likely_top_surprises": [p.driver_name for p in top_surprise],

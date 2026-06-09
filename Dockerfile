@@ -20,8 +20,8 @@ RUN useradd --create-home --shell /bin/bash f1user
 RUN chown -R f1user:f1user /app
 USER f1user
 
-# Initialize database
-RUN python main.py migrate-db
+# Initialize database on first run (handled by app.py)
+# RUN python -c "from src.database.models import init_db; init_db()"
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

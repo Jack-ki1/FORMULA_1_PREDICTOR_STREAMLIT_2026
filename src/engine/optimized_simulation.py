@@ -5,7 +5,7 @@ Vectorizes Monte Carlo simulation using NumPy for 10-50x speedup.
 Implements parallel processing and optional GPU support via CuPy.
 
 Usage:
-    from engine.optimized_simulation import simulate_race_vectorized
+    from src.engine.optimized_simulation import simulate_race_vectorized
     result = simulate_race_vectorized("canada", n_runs=10000)
 """
 
@@ -44,9 +44,9 @@ def simulate_race_vectorized(
     Returns:
         Simulation results dictionary (same format as original)
     """
-    from data.circuit_data import get_circuit
-    from data.driver_data import get_all_drivers
-    from engine.feature_engineering import compute_all_drivers
+    from src.data.circuit_data import get_circuit
+    from src.data.driver_data import get_all_drivers
+    from src.engine.feature_engineering import compute_all_drivers
     
     t_start = time.perf_counter()
     
@@ -165,7 +165,7 @@ def simulate_race_vectorized(
         }
     
     # Compute confidence intervals
-    from engine.probability_model import compute_confidence_intervals
+    from src.engine.probability_model import compute_confidence_intervals
     confidence_intervals = compute_confidence_intervals(stats, n_runs)
     
     elapsed = time.perf_counter() - t_start
@@ -245,7 +245,7 @@ def simulate_race_parallel(
 
 def _worker_simulation(circuit_id, rain_prob, n_runs, seed):
     """Worker function for parallel simulation."""
-    from engine.probability_model import simulate_race
+    from src.engine.probability_model import simulate_race
     
     return simulate_race(
         circuit_id=circuit_id,
@@ -303,7 +303,7 @@ def _aggregate_results(results: List[dict], total_runs: int) -> dict:
         }
     
     # Compute confidence intervals
-    from engine.probability_model import compute_confidence_intervals
+    from src.engine.probability_model import compute_confidence_intervals
     confidence_intervals = compute_confidence_intervals(aggregated_stats, total_runs)
     
     return {
@@ -323,7 +323,7 @@ def benchmark_simulations(circuit_id: str = "canada", n_runs: int = 5000):
     print(f"{'='*70}\n")
     
     # Original Python implementation
-    from engine.probability_model import simulate_race as original_simulate
+    from src.engine.probability_model import simulate_race as original_simulate
     
     t_start = time.perf_counter()
     result_orig = original_simulate(circuit_id, n_runs=n_runs, seed=42)

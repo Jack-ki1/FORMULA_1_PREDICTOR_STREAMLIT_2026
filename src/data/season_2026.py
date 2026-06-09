@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Try to import FastF1
 try:
-    from data.fastf1_integration import load_entire_season, FASTF1_AVAILABLE
+    from src.data.fastf1_integration import load_entire_season, FASTF1_AVAILABLE
 except ImportError:
     FASTF1_AVAILABLE = False
     logger.warning("FastF1 integration not available.")

@@ -37,8 +37,8 @@ def generate_report(
         Path to generated HTML file
     """
     try:
-        from engine.predictor import predict, PredictionRequest
-        from data.circuit_data import get_circuit
+        from src.engine.predictor import predict, PredictionRequest
+        from src.data.circuit_data import get_circuit
     except ImportError as e:
         logger.error(f"Import error: {e}")
         raise
