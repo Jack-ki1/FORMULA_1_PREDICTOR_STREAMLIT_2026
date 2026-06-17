@@ -11,17 +11,19 @@ FEATURE_WEIGHTS: Weights for the composite driver performance score.
 
 # ── Feature Weights ────────────────────────────────────────────────────────────
 # These weights determine the importance of each feature in the composite score.
-# Sum: 0.25 + 0.20 + 0.20 + 0.10 + 0.10 + 0.05 + 0.05 + 0.05 = 1.00
+# Sum: 0.22 + 0.18 + 0.15 + 0.15 + 0.10 + 0.08 + 0.05 + 0.04 + 0.03 = 1.00
+# NEW: Added practice_pace weight (0.15) - captures current weekend form
 
 FEATURE_WEIGHTS: dict[str, float] = {
-    "elo_rating":           0.25,  # Driver skill (multi-dimensional ELO)
-    "constructor_strength": 0.20,  # Car performance
-    "recent_form":          0.20,  # Last N race results (exponentially weighted)
+    "elo_rating":           0.22,  # Driver skill (multi-dimensional ELO)
+    "constructor_strength": 0.18,  # Car performance
+    "recent_form":          0.15,  # Last N race results (exponentially weighted)
+    "practice_pace":        0.15,  # NEW: Current weekend practice pace (FP2/FP3)
     "track_type_fit":       0.10,  # Driver-circuit type compatibility
-    "reliability":          0.10,  # DNF rate (career + recent blend)
+    "reliability":          0.08,  # DNF rate (career + recent blend)
     "weather_adjustment":   0.05,  # Wet skill × rain probability
-    "safety_car_upside":    0.05,  # Opportunity to gain positions
-    "grid_position":        0.05,  # Starting position advantage
+    "safety_car_upside":    0.04,  # Opportunity to gain positions
+    "grid_position":        0.03,  # Starting position advantage
 }
 
 
@@ -48,8 +50,8 @@ def _validate_weights():
     
     # Required keys from compute_composite_score()
     required_keys = {
-        "elo_rating", "constructor_strength", "recent_form", "track_type_fit",
-        "reliability", "weather_adjustment", "safety_car_upside", "grid_position"
+        "elo_rating", "constructor_strength", "recent_form", "practice_pace",
+        "track_type_fit", "reliability", "weather_adjustment", "safety_car_upside", "grid_position"
     }
     actual_keys = set(FEATURE_WEIGHTS.keys())
     assert required_keys == actual_keys, (

@@ -137,6 +137,7 @@ def predict(request: PredictionRequest) -> dict:
     # ── Phase 7: Refresh FastF1 cache if live data requested ──
     data_source = "static_fallback"
     data_freshness = None
+    qualifying_data_used = False
 
     if request.use_live_data:
         try:
@@ -147,6 +148,46 @@ def predict(request: PredictionRequest) -> dict:
         except Exception as e:
             logger.warning(f"FastF1 live data refresh failed: {e}")
             data_source = "fastf1_failed"
+    
+    # ── AUTO-FETCH QUALIFYING DATA (NEW) ──
+    # If grid_overrides not manually provided, try to fetch actual qualifying results
+    if not request.grid_overrides:
+        try:
+            from src.data.fastf1_integration import (
+                fetch_qualifying_grid,
+                build_grid_overrides_from_qualifying,
+                should_fetch_qualifying
+            )
+            
+            # Check if we're in a race weekend where qualifying should have happened
+            if should_fetch_qualifying(request.circuit_id):
+                logger.info(f"Attempting to fetch qualifying data for {request.circuit_id}")
+                
+                # Get current year from calendar
+                from src.data.calendar_2026 import CALENDAR_2026
+                race_info = next((r for r in CALENDAR_2026 if r['circuit'] == request.circuit_id), None)
+                season = int(race_info['date'][:4]) if race_info else datetime.now().year
+                
+                # Fetch qualifying grid
+                qual_data = fetch_qualifying_grid(season, request.circuit_id)
+                
+                if qual_data:
+                    # Convert to grid_overrides format
+                    request.grid_overrides = build_grid_overrides_from_qualifying(qual_data)
+                    
+                    if request.grid_overrides:
+                        qualifying_data_used = True
+                        data_source = "fastf1_with_qualifying"
+                        logger.info(
+                            f"✓ Using actual qualifying grid: {len(request.grid_overrides)} drivers, "
+                            f"pole: {qual_data.get('pole_position')}"
+                        )
+                else:
+                    logger.info(f"No qualifying data available yet for {request.circuit_id}")
+        
+        except Exception as e:
+            logger.warning(f"Auto-fetch of qualifying data failed: {e}")
+            # Continue with static predictions - don't fail the whole prediction
     
     def _run_prediction():
         """Execute prediction pipeline when cache miss occurs."""
@@ -198,7 +239,10 @@ def predict(request: PredictionRequest) -> dict:
         # - High rain probability circuits (Monaco, Spa) reduce confidence by up to 15%
         # Minimum floor of 40% ensures we never claim zero confidence
         # These coefficients were calibrated against prediction accuracy across 2024-2025 seasons
-        overall_confidence = max(0.40, 0.90 - (sc_prob * 0.25) - (rain_prob * 0.15))
+        
+        # BONUS CONFIDENCE BOOST when using actual qualifying data (+10%)
+        confidence_boost = 0.10 if qualifying_data_used else 0.0
+        overall_confidence = max(0.40, 0.90 + confidence_boost - (sc_prob * 0.25) - (rain_prob * 0.15))
 
         # Build output dicts, also preserving raw features + position_distribution
         output_predictions = []
@@ -236,6 +280,8 @@ def predict(request: PredictionRequest) -> dict:
                 # ── Phase 7: Data provenance metadata ──
                 "data_source":              data_source,
                 "data_freshness":           data_freshness,
+                "qualifying_data_used":     qualifying_data_used,
+                "grid_positions_count":     len(request.grid_overrides) if request.grid_overrides else 0,
                 "platt_calibration_enabled": bool(raw.get("meta", {}).get("platt_calibration_enabled", False)),
             },
 

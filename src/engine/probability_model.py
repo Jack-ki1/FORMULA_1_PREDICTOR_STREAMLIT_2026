@@ -108,23 +108,74 @@ def _is_platt_calibration_fitted() -> bool:
 
     Toggle via env var:
       - PLATT_CALIBRATION_ENABLED=1 to enable
+    
+    FIX F-05: Also check for isotonic calibration availability.
     """
     import os
+
+    # Check if isotonic calibration is available (preferred method)
+    try:
+        from src.engine.calibration_state import ISOTONIC_CALIBRATION
+        isotonic_available = any(
+            cal.is_fitted and cal.calibration_points 
+            for cal in ISOTONIC_CALIBRATION.values()
+        )
+        if isotonic_available:
+            return True
+    except Exception:
+        pass
 
     return os.getenv("PLATT_CALIBRATION_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _maybe_apply_platt(raw_prob: float, outcome_type: str) -> float:
+    """Apply calibration if enabled, preferring isotonic over Platt."""
     if not _is_platt_calibration_fitted():
         return raw_prob
+    
+    # FIX F-05: Try isotonic calibration first (more flexible than Platt)
+    try:
+        from src.engine.calibration_state import ISOTONIC_CALIBRATION
+        
+        iso_cal = ISOTONIC_CALIBRATION.get(outcome_type)
+        if iso_cal and iso_cal.is_fitted and iso_cal.calibration_points:
+            return iso_cal.calibrate(raw_prob)
+    except Exception:
+        pass
+    
+    # Fallback to Platt scaling
     return apply_platt(raw_prob, outcome_type)
 
 
-def _softmax(scores: List[float], temperature: float = 0.28) -> List[float]:
-
-    """Temperature-scaled numerically stable softmax."""
+def _softmax(scores: List[float], temperature: float = None) -> List[float]:
+    """Temperature-scaled numerically stable softmax.
+    
+    FIX F-07: Adaptive temperature based on field competitiveness.
+    If no temperature provided, computes it dynamically from score spread.
+    
+    Args:
+        scores: Raw scores to convert to probabilities
+        temperature: Optional fixed temperature. If None, auto-calculates.
+    
+    Returns:
+        Probability distribution summing to 1.0
+    """
     if not scores:
         return []
+    
+    # FIX F-07: Adaptive temperature based on field competitiveness
+    if temperature is None:
+        score_spread = max(scores) - min(scores) if scores else 0
+        
+        # Competitive field (small spread): higher temperature for more uncertainty
+        # Dominant car (large spread): lower temperature to concentrate probability
+        if score_spread < 0.15:
+            temperature = 0.32  # Competitive field
+        elif score_spread > 0.30:
+            temperature = 0.24  # Dominant car
+        else:
+            temperature = 0.28  # Default
+    
     scaled = [s / temperature for s in scores]
     max_s = max(scaled)
     exps = [math.exp(s - max_s) for s in scaled]
@@ -412,6 +463,23 @@ def simulate_race(
         raw = stats[did]["position_distribution"]
         total = sum(raw) or 1
         stats[did]["position_distribution"] = [c / total for c in raw]
+
+    # FIX F-09: Normalize field-level DNF rates to historical average (~2.1 DNFs per race)
+    # Previously, per-driver DNF clamping at 45% led to unrealistic total DNF counts.
+    # Real F1 averages ~2-3 DNFs per race (10-15% of a 20-car field).
+    # This rescales individual DNF probabilities so the expected total matches reality.
+    total_expected_dnfs = sum(stats[did]["dnf_probability"] for did in stats)
+    target_total_dnfs = 2.1  # Historical F1 average
+    
+    if total_expected_dnfs > 0:
+        dnf_scaling_factor = target_total_dnfs / total_expected_dnfs
+        
+        # Apply scaling factor, but keep within reasonable bounds [0.02, 0.35]
+        for did in stats:
+            scaled_dnf = stats[did]["dnf_probability"] * dnf_scaling_factor
+            stats[did]["dnf_probability"] = round(max(0.02, min(0.35, scaled_dnf)), 4)
+            # Update count for consistency
+            stats[did]["dnf_count"] = round(stats[did]["dnf_probability"] * n_runs)
 
     # FEATURE-16: Compute confidence intervals
     confidence_intervals = compute_confidence_intervals(stats, n_runs)

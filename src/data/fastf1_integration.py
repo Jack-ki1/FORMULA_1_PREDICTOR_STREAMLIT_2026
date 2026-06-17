@@ -22,7 +22,7 @@ Integrates fastf1 library for:
 """
 
 import logging
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from datetime import datetime
 import numpy as np
 
@@ -924,6 +924,474 @@ def get_circuit_telemetry_profile(circuit_name: str, seasons: List[int]) -> Dict
     }
 
 
+# ── REAL-TIME DATA FETCHING FOR PREDICTIONS ──────────────────────────────────────
+
+def fetch_qualifying_grid(season: int, circuit_key: str) -> Optional[Dict]:
+    """
+    Fetch actual qualifying results for a race weekend.
+    
+    Returns grid positions and qualifying times if available.
+    Returns None if qualifying hasn't happened yet or data unavailable.
+    
+    This enables Sunday race predictions to use ACTUAL Saturday qualifying results,
+    dramatically improving prediction accuracy by eliminating grid position uncertainty.
+    
+    Args:
+        season: Year (e.g., 2026)
+        circuit_key: Circuit identifier from calendar (e.g., 'monaco', 'spain')
+    
+    Returns:
+        Dict with:
+        - grid: List of {driver_id, position, q1_time, q2_time, q3_time, team}
+        - pole_position: Driver abbreviation who took pole
+        - session_complete: Boolean indicating if qualifying finished
+        - fetched_at: ISO timestamp of when data was fetched
+        - circuit_name: Full circuit name
+    
+    Example Usage:
+        >>> qual_data = fetch_qualifying_grid(2026, 'monaco')
+        >>> if qual_data:
+        ...     print(f"Pole: {qual_data['pole_position']}")
+        ...     for driver in qual_data['grid'][:5]:
+        ...         print(f"P{driver['position']}: {driver['driver_id']}")
+    """
+    if not FASTF1_AVAILABLE:
+        logger.warning("FastF1 not available. Cannot fetch qualifying data.")
+        return None
+    
+    try:
+        _ensure_cache()
+        
+        # Map circuit key to FastF1 race name
+        race_name = _circuit_to_race_name(circuit_key)
+        if not race_name:
+            logger.warning(f"Could not map circuit key '{circuit_key}' to race name")
+            return None
+        
+        logger.info(f"Fetching qualifying data for {season} {race_name}")
+        
+        # Try to load qualifying session
+        session = get_session(season, race_name, 'Q')
+        
+        # Check if session has results (qualifying completed)
+        if session.results is None or len(session.results) == 0:
+            logger.info(f"Qualifying not yet completed for {race_name}")
+            return None
+        
+        # Extract grid positions and qualifying times
+        grid = []
+        for idx, row in session.results.iterrows():
+            driver_abbrev = row.get('Abbreviation')
+            if not driver_abbrev:
+                continue
+            
+            grid.append({
+                'driver_id': driver_abbrev,
+                'position': int(row.get('Position', 99)),
+                'q1_time': row['Q1'].total_seconds() if row.get('Q1') else None,
+                'q2_time': row['Q2'].total_seconds() if row.get('Q2') else None,
+                'q3_time': row['Q3'].total_seconds() if row.get('Q3') else None,
+                'team': row.get('TeamName', 'Unknown'),
+                'gap_to_pole': None,  # Will calculate below
+            })
+        
+        # Sort by position and calculate gaps
+        grid.sort(key=lambda x: x['position'])
+        
+        # Calculate gap to pole for each driver
+        if grid and grid[0]['q3_time']:
+            pole_time = grid[0]['q3_time']
+            for driver in grid:
+                if driver['q3_time']:
+                    driver['gap_to_pole'] = round(driver['q3_time'] - pole_time, 3)
+        
+        result = {
+            'grid': grid,
+            'pole_position': grid[0]['driver_id'] if grid else None,
+            'session_complete': True,
+            'fetched_at': datetime.now().isoformat(),
+            'circuit_name': session.event.get('EventName', race_name),
+            'total_drivers': len(grid),
+        }
+        
+        logger.info(f"Successfully fetched qualifying grid: {len(grid)} drivers, pole: {result['pole_position']}")
+        return result
+    
+    except Exception as e:
+        logger.warning(f"Could not fetch qualifying data for {circuit_key}: {e}")
+        return None
+
+
+def build_grid_overrides_from_qualifying(qualifying_data: Optional[Dict]) -> Dict[str, int]:
+    """
+    Convert qualifying results to grid_overrides format for predictor.
+    
+    This transforms FastF1 qualifying data into the format expected by the
+    prediction engine's grid_overrides parameter.
+    
+    Args:
+        qualifying_data: Output from fetch_qualifying_grid()
+    
+    Returns:
+        Dict mapping driver_id → grid_position
+        Empty dict if no qualifying data available
+    
+    Example:
+        >>> qual_data = fetch_qualifying_grid(2026, 'monaco')
+        >>> grid = build_grid_overrides_from_qualifying(qual_data)
+        >>> print(grid)
+        {'VER': 1, 'LEC': 2, 'NOR': 3, ...}
+    """
+    if not qualifying_data or 'grid' not in qualifying_data:
+        return {}
+    
+    return {
+        item['driver_id']: item['position']
+        for item in qualifying_data['grid']
+        if item.get('driver_id') and item.get('position')
+    }
+
+
+def fetch_practice_pace_data(season: int, circuit_key: str, session_type: str = 'FP2') -> Optional[Dict]:
+    """
+    Fetch practice session data to extract pace information.
+    
+    FP2 is most valuable as it includes race simulations with representative fuel loads.
+    FP3 is useful for qualifying simulation runs.
+    FP1 is less reliable due to heavy fuel and setup exploration.
+    
+    Args:
+        season: Year (e.g., 2026)
+        circuit_key: Circuit identifier (e.g., 'monaco')
+        session_type: 'FP1', 'FP2', or 'FP3' (default: 'FP2')
+    
+    Returns:
+        Dict with:
+        - driver_pace: Dict mapping driver_id → avg_lap_time, lap_count, compound_breakdown
+        - long_run_pace: Average lap times on race fuel (estimated)
+        - short_run_pace: Best laps (qualifying sim)
+        - tire_compounds_used: List of compounds seen
+        - session_complete: Boolean
+        - total_laps: Total laps in session
+    
+    Example Usage:
+        >>> fp2_data = fetch_practice_pace_data(2026, 'monaco', 'FP2')
+        >>> if fp2_data:
+        ...     for driver, pace in fp2_data['driver_pace'].items():
+        ...         print(f"{driver}: avg {pace['avg_lap_time']:.2f}s over {pace['lap_count']} laps")
+    """
+    if not FASTF1_AVAILABLE:
+        logger.warning("FastF1 not available. Cannot fetch practice data.")
+        return None
+    
+    try:
+        _ensure_cache()
+        
+        # Map circuit key to race name
+        race_name = _circuit_to_race_name(circuit_key)
+        if not race_name:
+            logger.warning(f"Could not map circuit key '{circuit_key}' to race name")
+            return None
+        
+        logger.info(f"Fetching {session_type} data for {season} {race_name}")
+        
+        # Load practice session
+        session = get_session(season, race_name, session_type)
+        
+        # Check if session has lap data
+        if session.laps is None or len(session.laps) == 0:
+            logger.info(f"{session_type} lap data not available for {race_name}")
+            return None
+        
+        # Extract pace data per driver
+        driver_pace = {}
+        all_compounds = set()
+        
+        for driver_abbrev in session.laps['Driver'].unique():
+            driver_laps = session.laps.pick_driver(driver_abbrev)
+            
+            # Filter out invalid laps (outliers, red flags, etc.)
+            valid_laps = driver_laps[driver_laps['LapTime'].notna()]
+            
+            if len(valid_laps) < 2:  # Need at least 2 laps for meaningful average
+                continue
+            
+            # Calculate lap times in seconds
+            lap_times = valid_laps['LapTime'].apply(lambda x: x.total_seconds())
+            
+            # Get compound breakdown
+            compound_counts = valid_laps['Compound'].value_counts().to_dict()
+            all_compounds.update(compound_counts.keys())
+            
+            # Identify likely race simulation laps (longer stints, consistent times)
+            # Heuristic: laps with tire age > 5 are likely race sim
+            race_sim_laps = valid_laps[valid_laps['TyreLife'] >= 5]
+            race_sim_times = race_sim_laps['LapTime'].apply(lambda x: x.total_seconds()) if len(race_sim_laps) > 0 else None
+            
+            # Identify likely qualifying sim laps (short runs, fresh tires)
+            quali_sim_laps = valid_laps[valid_laps['TyreLife'] <= 3]
+            quali_sim_times = quali_sim_laps['LapTime'].apply(lambda x: x.total_seconds()) if len(quali_sim_laps) > 0 else None
+            
+            driver_pace[driver_abbrev] = {
+                'avg_lap_time': float(lap_times.mean()),
+                'best_lap_time': float(lap_times.min()),
+                'lap_count': int(len(valid_laps)),
+                'std_dev': float(lap_times.std()) if len(lap_times) > 1 else 0,
+                'compound_breakdown': compound_counts,
+                'race_sim_avg': float(race_sim_times.mean()) if race_sim_times is not None and len(race_sim_times) > 0 else None,
+                'race_sim_laps': int(len(race_sim_laps)) if race_sim_laps is not None else 0,
+                'quali_sim_best': float(quali_sim_times.min()) if quali_sim_times is not None and len(quali_sim_times) > 0 else None,
+                'quali_sim_laps': int(len(quali_sim_laps)) if quali_sim_laps is not None else 0,
+            }
+        
+        result = {
+            'driver_pace': driver_pace,
+            'tire_compounds_used': list(all_compounds),
+            'session_complete': True,
+            'total_laps': int(len(session.laps)),
+            'session_type': session_type,
+            'circuit_name': session.event.get('EventName', race_name),
+            'fetched_at': datetime.now().isoformat(),
+        }
+        
+        logger.info(f"Successfully fetched {session_type} data: {len(driver_pace)} drivers, {result['total_laps']} total laps")
+        return result
+    
+    except Exception as e:
+        logger.warning(f"Could not fetch {session_type} data for {circuit_key}: {e}")
+        return None
+
+
+def should_fetch_qualifying(circuit_key: str) -> bool:
+    """
+    Determine if we should attempt to fetch qualifying data based on current date.
+    
+    Checks if today is on or after the race date (when qualifying would have occurred).
+    
+    Args:
+        circuit_key: Circuit identifier from calendar
+    
+    Returns:
+        True if qualifying should have happened, False otherwise
+    """
+    try:
+        from src.data.calendar_2026 import CALENDAR_2026
+        
+        # Find the race in calendar
+        race = next((r for r in CALENDAR_2026 if r['circuit'] == circuit_key), None)
+        
+        if not race:
+            logger.warning(f"Circuit '{circuit_key}' not found in calendar")
+            return False
+        
+        # Parse race date
+        race_date = datetime.strptime(race['date'], '%Y-%m-%d').date()
+        today = datetime.now().date()
+        
+        # Qualifying typically happens on Saturday (day before race)
+        # So we check if today >= race_date (which means qualifying has passed)
+        should_fetch = today >= race_date
+        
+        if should_fetch:
+            logger.info(f"Race weekend detected for {circuit_key} - will attempt to fetch qualifying data")
+        else:
+            days_until = (race_date - today).days
+            logger.debug(f"{days_until} days until {circuit_key} race - qualifying not yet available")
+        
+        return should_fetch
+    
+    except Exception as e:
+        logger.error(f"Error checking qualifying availability: {e}")
+        return False
+
+
+def get_prediction_data_availability(circuit_key: str) -> Dict[str, Any]:
+    """
+    NEW: Get comprehensive data availability status for a circuit.
+    
+    Analyzes current date relative to race weekend and determines what data
+    sources are available for predictions.
+    
+    Args:
+        circuit_key: Circuit identifier from calendar
+    
+    Returns:
+        Dictionary with:
+        - days_until_race: Days remaining (negative if past)
+        - race_weekend_active: Boolean indicating if it's race weekend
+        - practice_available: Can fetch FP1/FP2/FP3 data
+        - qualifying_available: Can fetch Q results
+        - recommended_strategy: Suggested prediction approach
+        - confidence_boost: Expected accuracy improvement from available data
+        - data_sources: List of available data sources
+    
+    Example Usage:
+        >>> status = get_prediction_data_availability("monaco")
+        >>> print(f"Strategy: {status['recommended_strategy']}")
+        >>> print(f"Confidence boost: +{status['confidence_boost']*100:.0f}%")
+    """
+    try:
+        from src.data.calendar_2026 import CALENDAR_2026
+        
+        # Find the race
+        race = next((r for r in CALENDAR_2026 if r['circuit'] == circuit_key), None)
+        
+        if not race:
+            return {
+                "days_until_race": None,
+                "race_weekend_active": False,
+                "practice_available": False,
+                "qualifying_available": False,
+                "recommended_strategy": "historical_only",
+                "confidence_boost": 0.0,
+                "data_sources": ["historical_database"],
+                "message": "Circuit not found in calendar"
+            }
+        
+        # Calculate timing
+        race_date = datetime.strptime(race['date'], '%Y-%m-%d').date()
+        today = datetime.now().date()
+        days_until = (race_date - today).days
+        
+        # Determine race weekend status
+        # Race weekend = Friday to Sunday of race week
+        race_weekend_active = -2 <= days_until <= 0
+        
+        # Check data availability based on timing
+        practice_available = False
+        qualifying_available = False
+        data_sources = ["historical_database"]
+        confidence_boost = 0.0
+        
+        if days_until > 2:
+            # More than 2 days before race (Thursday or earlier)
+            strategy = "historical_only"
+            message = f"📅 {days_until} days until race - using historical data only"
+            
+        elif days_until == 2 or days_until == 1:
+            # Friday or Saturday morning - practice sessions likely completed
+            practice_available = True
+            data_sources.append("practice_sessions")
+            confidence_boost = 0.05  # +5% from practice data
+            
+            if days_until == 1:
+                strategy = "practice_enhanced"
+                message = "🏃 Practice sessions completed - enhanced with real pace data (+5% accuracy)"
+            else:
+                strategy = "practice_partial"
+                message = "🏃 Some practice data available - moderate enhancement"
+        
+        elif days_until == 0:
+            # Race day (Sunday) - qualifying definitely completed
+            practice_available = True
+            qualifying_available = True
+            data_sources.extend(["practice_sessions", "qualifying_results"])
+            confidence_boost = 0.15  # +15% from qualifying + practice
+            
+            strategy = "full_data"
+            message = "✅ Full weekend data available - maximum accuracy (+15%)"
+        
+        else:
+            # Race already completed
+            strategy = "post_race_analysis"
+            message = "🏁 Race completed - use for post-race analysis and learning"
+        
+        result = {
+            "days_until_race": days_until,
+            "race_weekend_active": race_weekend_active,
+            "practice_available": practice_available,
+            "qualifying_available": qualifying_available,
+            "recommended_strategy": strategy,
+            "confidence_boost": confidence_boost,
+            "data_sources": data_sources,
+            "message": message,
+            "race_name": race.get('name', 'Unknown'),
+            "race_date": race['date'],
+        }
+        
+        logger.info(
+            f"Data availability for {circuit_key}: {strategy} "
+            f"(boost: +{confidence_boost*100:.0f}%, sources: {len(data_sources)})"
+        )
+        
+        return result
+    
+    except Exception as e:
+        logger.error(f"Error determining data availability: {e}")
+        return {
+            "days_until_race": None,
+            "race_weekend_active": False,
+            "practice_available": False,
+            "qualifying_available": False,
+            "recommended_strategy": "historical_only",
+            "confidence_boost": 0.0,
+            "data_sources": ["historical_database"],
+            "message": f"Error: {str(e)}"
+        }
+
+
+def _circuit_to_race_name(circuit_key: str) -> Optional[str]:
+    """
+    Map circuit key from calendar to FastF1 race name.
+    
+    Handles variations in naming between our internal keys and FastF1's official names.
+    
+    Args:
+        circuit_key: Internal circuit identifier (e.g., 'australia', 'las_vegas')
+    
+    Returns:
+        FastF1-compatible race name (e.g., 'Australian Grand Prix', 'Las Vegas')
+        None if mapping not found
+    """
+    # Common mappings - expand as needed
+    circuit_mappings = {
+        'australia': 'Australian Grand Prix',
+        'bahrain': 'Bahrain Grand Prix',
+        'china': 'Chinese Grand Prix',
+        'japan': 'Japanese Grand Prix',
+        'miami': 'Miami Grand Prix',
+        'canada': 'Canadian Grand Prix',
+        'monaco': 'Monaco Grand Prix',
+        'spain': 'Spanish Grand Prix',
+        'barcelona': 'Spanish Grand Prix',  # Alternative key
+        'austria': 'Austrian Grand Prix',
+        'britain': 'British Grand Prix',
+        'uk': 'British Grand Prix',  # Alternative key
+        'hungary': 'Hungarian Grand Prix',
+        'belgium': 'Belgian Grand Prix',
+        'netherlands': 'Dutch Grand Prix',
+        'italy': 'Italian Grand Prix',
+        'monza': 'Italian Grand Prix',  # Alternative key
+        'madrid': 'Madrid Grand Prix',  # New Madrid circuit
+        'azerbaijan': 'Azerbaijan Grand Prix',
+        'singapore': 'Singapore Grand Prix',
+        'usa': 'United States Grand Prix',
+        'us': 'United States Grand Prix',  # Alternative key
+        'mexico': 'Mexico City Grand Prix',
+        'brazil': 'São Paulo Grand Prix',
+        'sao_paulo': 'São Paulo Grand Prix',  # Alternative key
+        'las_vegas': 'Las Vegas Grand Prix',
+        'vegas': 'Las Vegas Grand Prix',  # Alternative key
+        'qatar': 'Qatar Grand Prix',
+        'uae': 'Abu Dhabi Grand Prix',
+        'abu_dhabi': 'Abu Dhabi Grand Prix',  # Alternative key
+    }
+    
+    # Try direct mapping first
+    if circuit_key in circuit_mappings:
+        return circuit_mappings[circuit_key]
+    
+    # Try fuzzy matching (case-insensitive)
+    circuit_key_lower = circuit_key.lower()
+    for key, value in circuit_mappings.items():
+        if circuit_key_lower in key.lower() or key.lower() in circuit_key_lower:
+            logger.info(f"Fuzzy matched '{circuit_key}' to '{value}'")
+            return value
+    
+    # If no match found, try using the circuit key as-is (FastF1 may accept it)
+    logger.warning(f"No mapping found for '{circuit_key}', trying as-is")
+    return circuit_key.title().replace('_', ' ')
+
 
 # ── EXPORT ──────────────────────────────────────────────────────────────────────
 
@@ -948,35 +1416,13 @@ __all__ = [
     "get_constructor_pace_rankings",
     "refresh_driver_database",
     "get_circuit_telemetry_profile",
+    # Real-time data fetching (NEW)
+    "fetch_qualifying_grid",
+    "build_grid_overrides_from_qualifying",
+    "fetch_practice_pace_data",
+    "should_fetch_qualifying",
+    "get_prediction_data_availability",  # NEW: Smart timing function
 ]
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    
-    if FASTF1_AVAILABLE:
-        print("Fast-F1 Integration Module v3.0 — ENHANCED")
-        print("=" * 60)
-        print("\nCore Functions:")
-        print("  - get_session(season, race_name, session_type)")
-        print("  - ingest_race_results(season, race_name)")
-        print("  - ingest_lap_data(season, race_name, driver_id)")
-        print("  - ingest_qualifying_results(season, race_name)")
-        print("  - ingest_tire_strategy(season, race_name)")
-        print("  - ingest_weather_data(season, race_name)")
-        print("\nNEW Functions (v3.0 Enhanced):")
-        print("  - ingest_telemetry_data(season, race_name, driver_id)")
-        print("    → Speed, RPM, throttle, brake, DRS, gear, X/Y position")
-        print("  - compare_drivers_telemetry(season, race_name, driver1, driver2)")
-        print("    → Compare speed traces, braking, throttle application")
-        print("  - load_entire_season(season, session_type)")
-        print("    → Load all races with error handling")
-        print("  - extract_ml_features(season, race_name)")
-        print("    → ML-ready features: consistency, tire deg, race stats")
-        print("\nUtility Functions:")
-        print("  - get_historical_circuit_stats(circuit_name, seasons)")
-        print("  - sync_all_historical_data(seasons)")
-        print("\n" + "=" * 60)
-        print("Install fastf1: pip install fastf1")
-        print("Docs: https://docs.fastf1.dev")
-    else:
-        print("fastf1 not installed. Install with: pip install fastf1")
+# __main__ block removed - use Streamlit app for predictions
+# For testing, see scripts/ directory

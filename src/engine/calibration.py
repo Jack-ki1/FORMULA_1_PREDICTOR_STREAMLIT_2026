@@ -3,10 +3,13 @@ Calibration & Backtesting — v2.
 
 FIX: temporal_cross_validate used strict length equality check which crashed
 when rounds had different driver counts. Replaced with round-by-round join.
+
+FIX F-05: Added isotonic regression calibration using 2024-2025 historical data.
+Isotonic regression is more flexible than Platt scaling and doesn't assume a sigmoid shape.
 """
 
 import math
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 
 
 def brier_score(predicted_probs: List[float], outcomes: List[int]) -> float:
@@ -161,3 +164,91 @@ def generate_calibration_report(predicted_probs: List[float], outcomes: List[int
             "calibration_error": round(abs(mean_pred - actual_rate), 4),
         })
     return report
+
+
+def fit_isotonic_calibration(
+    raw_probs: List[float], 
+    outcomes: List[int],
+    min_samples: int = 50
+) -> Optional[List[Tuple[float, float]]]:
+    """
+    FIX F-05: Fit isotonic regression for probability calibration.
+    
+    Uses scikit-learn's IsotonicRegression if available, otherwise falls back
+    to simple binning approach. Trained on historical 2024-2025 race data.
+    
+    Args:
+        raw_probs: Raw predicted probabilities from simulation
+        outcomes: Binary outcomes (1 if event occurred, 0 otherwise)
+        min_samples: Minimum samples required for reliable calibration
+    
+    Returns:
+        List of (threshold, calibrated_prob) pairs for interpolation, or None if insufficient data
+    """
+    if len(raw_probs) < min_samples:
+        return None
+    
+    try:
+        # Try sklearn isotonic regression first
+        from sklearn.isotonic import IsotonicRegression
+        
+        ir = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
+        ir.fit(raw_probs, outcomes)
+        
+        # Create lookup table at key points
+        thresholds = [i / 20.0 for i in range(21)]  # 0.00, 0.05, ..., 1.00
+        calibration_points = [(t, ir.predict([t])[0]) for t in thresholds]
+        
+        return calibration_points
+    
+    except ImportError:
+        # Fallback: simple binning approach
+        n_bins = 10
+        bins = [[] for _ in range(n_bins)]
+        
+        for prob, outcome in zip(raw_probs, outcomes):
+            bin_idx = min(int(prob * n_bins), n_bins - 1)
+            bins[bin_idx].append(outcome)
+        
+        calibration_points = []
+        for i in range(n_bins):
+            bin_center = (i + 0.5) / n_bins
+            if bins[i]:
+                calibrated_prob = sum(bins[i]) / len(bins[i])
+            else:
+                calibrated_prob = bin_center  # No data, use identity
+            calibration_points.append((bin_center, calibrated_prob))
+        
+        return calibration_points
+
+
+def apply_isotonic_calibration(raw_prob: float, calibration_points: List[Tuple[float, float]]) -> float:
+    """
+    Apply isotonic calibration by linear interpolation.
+    
+    Args:
+        raw_prob: Raw probability to calibrate
+        calibration_points: List of (threshold, calibrated_prob) from fit_isotonic_calibration
+    
+    Returns:
+        Calibrated probability
+    """
+    if not calibration_points:
+        return raw_prob
+    
+    # Find bracketing points
+    for i in range(len(calibration_points) - 1):
+        x0, y0 = calibration_points[i]
+        x1, y1 = calibration_points[i + 1]
+        
+        if x0 <= raw_prob <= x1:
+            # Linear interpolation
+            if x1 == x0:
+                return y0
+            t = (raw_prob - x0) / (x1 - x0)
+            return y0 + t * (y1 - y0)
+    
+    # Extrapolate edge cases
+    if raw_prob < calibration_points[0][0]:
+        return calibration_points[0][1]
+    return calibration_points[-1][1]

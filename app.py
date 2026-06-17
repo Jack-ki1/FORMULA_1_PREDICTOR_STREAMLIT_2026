@@ -2,6 +2,10 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 import random
+import logging
+
+# Setup logger
+logger = logging.getLogger(__name__)
 
 from theme import (
     apply_theme,
@@ -16,7 +20,7 @@ from src.engine.prediction_tracker import PredictionTracker
 from src.data.circuit_data import get_all_circuits, CIRCUITS
 from src.data.driver_data import get_all_drivers
 from src.reports.html_report import generate_report
-
+from src.services.accuracy_service import get_accuracy_service
 
 st.set_page_config(
     page_title="F1 Predictor 2026",
@@ -314,6 +318,59 @@ def render_race_mode(circuit_ids: list[str], default_circuit: str | None, rain_p
             key="main_circuit_selector",
         )
     
+    # ── PHASE 5: DATA AVAILABILITY INDICATOR ──
+    try:
+        from src.data.fastf1_integration import get_prediction_data_availability
+        
+        data_status = get_prediction_data_availability(selected_circuit)
+        
+        # Display smart data availability badge
+        strategy_colors = {
+            "historical_only": "gray",
+            "practice_partial": "blue",
+            "practice_enhanced": "orange",
+            "full_data": "green",
+            "post_race_analysis": "purple",
+        }
+        
+        color = strategy_colors.get(data_status['recommended_strategy'], "gray")
+        
+        # Map colors to RGB values
+        color_map = {
+            "gray": ("128,128,128", "808080", "666666"),
+            "blue": ("0,123,255", "007BFF", "0056B3"),
+            "orange": ("255,165,0", "FFA500", "CC8400"),
+            "green": ("40,167,69", "28A745", "1E7E34"),
+            "purple": ("128,0,128", "800080", "600060"),
+        }
+        
+        rgb, hex_bg, hex_text = color_map.get(color, color_map["gray"])
+        
+        data_sources_str = ', '.join([s.replace('_', ' ').title() for s in data_status['data_sources']])
+        confidence_str = f" | Confidence boost: +{data_status['confidence_boost']*100:.0f}%" if data_status['confidence_boost'] > 0 else ""
+        
+        st.markdown(
+            f"""
+            <div style='
+                padding: 12px;
+                margin: 8px 0;
+                border-radius: 8px;
+                background-color: rgba({rgb}, 0.1);
+                border-left: 4px solid #{hex_bg};
+            '>
+                <strong style='color: #{hex_text};'>
+                    {data_status['message']}
+                </strong><br>
+                <small style='color: #666;'>
+                    Data sources: {data_sources_str}{confidence_str}
+                </small>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    except Exception as e:
+        logger.debug(f"Data availability check failed: {e}")
+    
     with col2:
         rain_pct = st.slider("🌧️ Rain Probability (%)", min_value=0, max_value=100, value=int(rain_probability * 100), step=5, key="main_rain_slider")
         rain_probability_main = rain_pct / 100.0
@@ -338,6 +395,10 @@ def render_race_mode(circuit_ids: list[str], default_circuit: str | None, rain_p
     # Initialize grid overrides for session contexts
     grid_overrides = {}
     
+    # FIX F-03: Load qualifying grid from session state if available (persisted from Saturday)
+    if "qualifying_grid" in st.session_state:
+        grid_overrides = st.session_state["qualifying_grid"].copy()
+    
     # RACE WEEKEND TABS - Each with independent controls
     st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
     
@@ -348,7 +409,7 @@ def render_race_mode(circuit_ids: list[str], default_circuit: str | None, rain_p
     ])
     
     with friday_tab:
-        _render_friday_session(circuit_ids, selected_circuit, driver_records, driver_lookup, grid_overrides, rain_probability_main)
+        _render_friday_session(circuit_ids, selected_circuit, driver_records, driver_lookup, grid_overrides, rain_probability_main, n_simulations)
     
     with saturday_tab:
         _render_saturday_session(circuit_ids, selected_circuit, driver_records, driver_lookup, grid_overrides, sprint_weekend)
@@ -357,7 +418,7 @@ def render_race_mode(circuit_ids: list[str], default_circuit: str | None, rain_p
         _render_sunday_session(circuit_ids, selected_circuit, driver_records, driver_lookup, grid_overrides, rain_probability_main, n_simulations)
 
 
-def _render_friday_session(circuit_ids: list, default_circuit: str | None, driver_records: list, driver_lookup: dict, grid_overrides: dict, rain_probability: float):
+def _render_friday_session(circuit_ids: list, default_circuit: str | None, driver_records: list, driver_lookup: dict, grid_overrides: dict, rain_probability: float, n_simulations: int):
     """Friday Practice Sessions - Independent simulation controls."""
     st.markdown(
         "<div class='bb-card'><div class='bb-section-title'><span class='dot' style='background:var(--blue-secondary);'></span>Friday Practice Analysis</div></div>",
@@ -389,41 +450,98 @@ def _render_friday_session(circuit_ids: list, default_circuit: str | None, drive
     
     with st.spinner(f"Simulating {fp_session_type} at {_safe_get_circuit_meta(default_circuit)['name']}..."):
         try:
-            # Generate practice predictions
-            import random
-            random.seed(42)  # Reproducible for demo
+            # FIX F-01: Route Friday through real prediction engine instead of random.seed(42)
+            from src.engine.predictor import predict as run_predict_fn, PredictionRequest
             
+            # Session-specific noise levels for practice sessions
+            # FP1: High noise (exploration, heavy fuel, setup testing)
+            # FP2: Medium noise (race simulations, most representative)
+            # FP3: Low noise (qualifying prep, focused runs)
+            session_noise_multiplier = {
+                "FP1": 1.5,   # Highest variance
+                "FP2": 1.0,   # Baseline
+                "FP3": 0.8,   # Lowest variance
+            }
+            
+            # Use fewer simulations for practice (faster, less critical than race)
+            practice_sims = max(1000, int(n_simulations * 0.2))
+            
+            result = run_predict_fn(
+                PredictionRequest(
+                    circuit_id=default_circuit,
+                    rain_probability=rain_probability,
+                    n_simulations=practice_sims,
+                    seed=None,  # No fixed seed for realistic variance
+                    grid_overrides={},  # No grid overrides for practice
+                )
+            )
+            
+            predictions = result.get("predictions", [])
+            
+            # Generate practice-specific lap times from composite scores
+            # Higher composite score → faster expected lap time
             practice_results = []
-            base_time = 90.0  # Base lap time in seconds
+            base_lap_time = 90.0  # Base lap time in seconds (will vary by circuit)
             
-            for idx, driver in enumerate(driver_records[:15]):
-                # Simulate lap times with realistic variance
-                driver_skill = random.uniform(-0.5, 0.5)
-                car_performance = random.uniform(-0.3, 0.3)
-                consistency = random.uniform(0.1, 0.5)
+            # Get circuit-specific base time
+            circuit_meta = _safe_get_circuit_meta(default_circuit)
+            if "typical_lap_time" in circuit_meta:
+                base_lap_time = float(circuit_meta["typical_lap_time"])
+            
+            for pred in predictions[:15]:  # Top 15 drivers for practice
+                driver_id = pred.get("driver_id")
+                driver_data = next((d for d in driver_records if d["id"] == driver_id), None)
                 
-                predicted_time = base_time + (idx * 0.25) + driver_skill + car_performance
-                laps_completed = random.randint(18, 32)
-                reliability = random.choices(
-                    ["✅ Clean Run", "⚠️ Minor Issue", "❌ Early Stop"],
-                    weights=[70, 20, 10],
-                    k=1
-                )[0]
+                if not driver_data:
+                    continue
                 
-                # Tire compound tested
-                tire_compounds = ["Soft", "Medium", "Hard"]
-                primary_compound = random.choice(tire_compounds)
+                # Composite score drives base pace (higher = faster)
+                composite = pred.get("composite_score", 0.5)
+                
+                # Convert composite to lap time offset (0.5 → 0s, 1.0 → -2s, 0.0 → +2s)
+                pace_offset = (0.5 - composite) * 4.0
+                
+                # Apply session-specific noise
+                import random
+                noise_sigma = 0.15 * session_noise_multiplier[fp_session_type]
+                noise = random.gauss(0, noise_sigma)
+                
+                predicted_lap = base_lap_time + pace_offset + noise
+                
+                # Simulate laps completed (varies by session)
+                laps_by_session = {"FP1": (18, 28), "FP2": (25, 35), "FP3": (20, 30)}
+                min_laps, max_laps = laps_by_session[fp_session_type]
+                laps_completed = random.randint(min_laps, max_laps)
+                
+                # Reliability based on team/driver experience
+                reliability_roll = random.random()
+                if reliability_roll < 0.70:
+                    reliability = "✅ Clean Run"
+                elif reliability_roll < 0.90:
+                    reliability = "⚠️ Minor Issue"
+                else:
+                    reliability = "❌ Early Stop"
+                
+                # Tire compound tested (weighted toward session focus)
+                tire_weights = {
+                    "FP1": {"Hard": 0.5, "Medium": 0.35, "Soft": 0.15},  # Long runs
+                    "FP2": {"Medium": 0.4, "Hard": 0.35, "Soft": 0.25},  # Race sim + quali prep
+                    "FP3": {"Soft": 0.45, "Medium": 0.40, "Hard": 0.15},  # Quali focus
+                }
+                tire_choices = list(tire_weights[fp_session_type].keys())
+                tire_probs = list(tire_weights[fp_session_type].values())
+                primary_compound = random.choices(tire_choices, weights=tire_probs, k=1)[0]
                 
                 practice_results.append({
                     "Pos": 0,  # Will be set after sorting
-                    "Driver": _driver_label(driver),
-                    "Team": driver.get("team", "").replace("_", " ").title(),
-                    "Best Lap": f"{predicted_time:.3f}s",
+                    "Driver": _driver_label(driver_data),
+                    "Team": driver_data.get("team", "").replace("_", " ").title(),
+                    "Best Lap": f"{predicted_lap:.3f}s",
                     "Gap": "",  # Will calculate after sorting
                     "Laps": laps_completed,
                     "Primary Tire": primary_compound,
                     "Reliability": reliability,
-                    "Pace Rating": random.uniform(6.0, 9.5),
+                    "Pace Rating": min(10.0, max(5.0, 7.5 + (composite - 0.5) * 5)),
                 })
             
             # Sort by best lap time
@@ -431,11 +549,11 @@ def _render_friday_session(circuit_ids: list, default_circuit: str | None, drive
             
             # Calculate gaps
             leader_time = float(practice_results[0]["Best Lap"].replace('s', ''))
-            for result in practice_results:
+            for i, result in enumerate(practice_results):
                 current_time = float(result["Best Lap"].replace('s', ''))
                 gap = current_time - leader_time
                 result["Gap"] = f"+{gap:.3f}s" if gap > 0 else "LEADER"
-                result["Pos"] = practice_results.index(result) + 1
+                result["Pos"] = i + 1
             
             # Display results
             st.markdown(f"### {fp_session_type} Results - {_safe_get_circuit_meta(default_circuit)['name']}")
@@ -720,7 +838,34 @@ def _render_sunday_session(circuit_ids: list, default_circuit: str | None, drive
                 )
             )
             
+            # Extract meta first (needed for accuracy tracking)
             meta = result.get("meta", {})
+            
+            # Track prediction for accuracy monitoring
+            try:
+                import uuid
+                from datetime import datetime
+                prediction_id = str(uuid.uuid4())[:8]
+                
+                accuracy_service = get_accuracy_service()
+                accuracy_service.log_prediction(
+                    prediction_id=prediction_id,
+                    circuit_id=default_circuit,
+                    predictions=result.get("predictions", []),
+                    metadata={
+                        "rain_probability": rain_probability,
+                        "n_simulations": n_simulations,
+                        "timestamp": datetime.now().isoformat(),
+                        "qualifying_used": meta.get("qualifying_data_used", False),
+                    }
+                )
+                
+                # Store prediction_id in session state for later evaluation
+                st.session_state["last_prediction_id"] = prediction_id
+                logger.info(f"Logged prediction {prediction_id} for accuracy tracking")
+            except Exception as e:
+                logger.warning(f"Failed to log prediction for accuracy tracking: {e}")
+            
             preds_sorted = sorted(
                 result.get("predictions", []),
                 key=lambda x: (x.get("expected_position") or x.get("predicted_position", 999), -x.get("win_pct", 0)),
@@ -731,12 +876,69 @@ def _render_sunday_session(circuit_ids: list, default_circuit: str | None, drive
             podium = result.get("podium_predictions", [])
             favorite = podium[0] if podium else "-"
             
+            # ── SHOW QUALIFYING DATA STATUS (NEW) ──
+            qualifying_used = meta.get("qualifying_data_used", False)
+            grid_count = meta.get("grid_positions_count", 0)
+            
+            if qualifying_used and grid_count > 0:
+                st.success(
+                    f"✅ **Using Actual Qualifying Results**\n\n"
+                    f"Grid positions from Saturday's qualifying session ({grid_count} drivers). "
+                    "This significantly improves prediction accuracy by eliminating grid uncertainty."
+                )
+                
+                # Show top 5 grid positions as quick reference
+                with st.expander("📋 View Qualifying Grid (Top 10)", expanded=False):
+                    try:
+                        from src.data.fastf1_integration import fetch_qualifying_grid
+                        from src.data.calendar_2026 import CALENDAR_2026
+                        
+                        race_info = next((r for r in CALENDAR_2026 if r['circuit'] == default_circuit), None)
+                        if race_info:
+                            season = int(race_info['date'][:4])
+                            qual_data = fetch_qualifying_grid(season, default_circuit)
+                            
+                            if qual_data and qual_data.get('grid'):
+                                grid_df = pd.DataFrame([
+                                    {
+                                        "Pos": g['position'],
+                                        "Driver": g['driver_id'],
+                                        "Team": g.get('team', 'N/A'),
+                                        "Q3 Time": f"{g['q3_time']:.3f}s" if g.get('q3_time') else "N/A",
+                                        "Gap to Pole": f"+{g['gap_to_pole']:.3f}s" if g.get('gap_to_pole') else "POLE",
+                                    }
+                                    for g in qual_data['grid'][:10]
+                                ])
+                                st.dataframe(grid_df, hide_index=True, use_container_width=True)
+                                
+                                st.caption(f"Pole Position: {qual_data.get('pole_position', 'N/A')}")
+                    except Exception as e:
+                        st.warning(f"Could not display qualifying grid: {e}")
+            
+            elif grid_count > 0:
+                st.info(f"ℹ️ Using custom grid overrides: {grid_count} positions specified")
+            else:
+                st.info(
+                    "ℹ️ **Predicted Grid**: Qualifying results not yet available. "
+                    "Predictions based on historical performance and season form. "
+                    "Check back after Saturday qualifying for improved accuracy!"
+                )
+            
             # Metrics
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Predicted Winner", str(favorite))
             c2.metric("Model Confidence", f"{meta.get('overall_model_confidence', 0) * 100:.0f}%")
             c3.metric("Safety Car Risk", f"{meta.get('safety_car_probability', 0) * 100:.0f}%")
             c4.metric("Circuit", _safe_get_circuit_meta(default_circuit)['name'])
+            
+            # Data source info
+            data_source = meta.get("data_source", "static_fallback")
+            if data_source == "fastf1_with_qualifying":
+                st.caption(f"📡 Data Source: FastF1 Live + Qualifying Results | Updated: {meta.get('data_freshness', 'N/A')[:16]}")
+            elif data_source == "fastf1_live":
+                st.caption(f"📡 Data Source: FastF1 Live Data | Updated: {meta.get('data_freshness', 'N/A')[:16]}")
+            else:
+                st.caption("📡 Data Source: Historical Database & Season Trends")
             
             if grid_overrides:
                 st.caption(f"✓ Grid override applied: {len(grid_overrides)} positions")
@@ -1212,12 +1414,88 @@ def render_accuracy_mode():
         unsafe_allow_html=True,
     )
     
-    st.info("🔬 **Model Performance Tracker**: Comprehensive accuracy analysis across all prediction types.")
+    # Display current accuracy metrics from accuracy_service
+    try:
+        accuracy_service = get_accuracy_service()
+        metrics_30d = accuracy_service.get_accuracy_metrics(days=30)
+        metrics_90d = accuracy_service.get_accuracy_metrics(days=90)
+        
+        # Show summary cards
+        st.markdown("### 🎯 Current Performance (Last 30 Days)")
+        
+        if metrics_30d.get("total_evaluations", 0) > 0:
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                top3_acc = metrics_30d.get("top3_accuracy", {}).get("average_pct")
+                if top3_acc:
+                    st.metric(
+                        "Top-3 Accuracy",
+                        f"{top3_acc:.1f}%",
+                        delta="✅ Target Met" if top3_acc >= 80 else f"⚠️ {80 - top3_acc:.1f}% to target"
+                    )
+                else:
+                    st.metric("Top-3 Accuracy", "N/A")
+            
+            with col2:
+                winner_acc = metrics_30d.get("winner_prediction", {}).get("accuracy_pct")
+                if winner_acc:
+                    st.metric("Winner Prediction", f"{winner_acc:.1f}%")
+                else:
+                    st.metric("Winner Prediction", "N/A")
+            
+            with col3:
+                pos_error = metrics_30d.get("position_error", {}).get("mean_absolute_error")
+                if pos_error:
+                    st.metric("Avg Position Error", f"{pos_error:.2f} positions")
+                else:
+                    st.metric("Avg Position Error", "N/A")
+            
+            with col4:
+                total_evals = metrics_30d.get("total_evaluations", 0)
+                st.metric("Evaluations", total_evals)
+            
+            # Show trend
+            trend = metrics_30d.get("trend", {})
+            if trend.get("direction") == "improving":
+                st.success(f"📈 Accuracy Trend: Improving (+{trend.get('change_pct', 0):.1f}%)")
+            elif trend.get("direction") == "declining":
+                st.warning(f"📉 Accuracy Trend: Declining ({trend.get('change_pct', 0):.1f}%)")
+            else:
+                st.info("➡️ Accuracy Trend: Stable")
+        
+        else:
+            st.info("🔍 No evaluated predictions yet. Run predictions and record actual results to track accuracy.")
+            
+            # Show how to evaluate
+            with st.expander("ℹ️ How to Track Accuracy", expanded=True):
+                st.markdown("""
+                **To start tracking prediction accuracy:**
+                
+                1. **Run a race prediction** in Race mode
+                2. **After the actual race**, come back here
+                3. **Enter actual results** to compare against predictions
+                4. **View metrics** to see how accurate the model is
+                
+                **Target Metrics:**
+                - Top-3 Accuracy: ≥80% ✅
+                - Winner Prediction: ≥75%
+                - Mean Position Error: <2.0 positions
+                """)
     
-    run = st.button("🧪 Generate Accuracy Report", type="primary", width='stretch', key="acc_run")
+    except Exception as e:
+        st.error(f"Failed to load accuracy metrics: {e}")
+        logger.error(f"Accuracy dashboard error: {e}")
+    
+    st.markdown("---")
+    
+    # Legacy accuracy report section
+    st.markdown("### 🔬 Detailed Model Analysis")
+    
+    run = st.button("🧪 Generate Full Accuracy Report", type="primary", width='stretch', key="acc_run")
     
     if not run:
-        st.info("Track Brier scores, calibration, trends, and driver-specific predictability. Click above to generate report.")
+        st.info("Track Brier scores, calibration, trends, and driver-specific predictability. Click above to generate detailed report.")
         return
     
     with st.spinner("Analyzing prediction accuracy…"):
@@ -1294,6 +1572,49 @@ def render_download_mode(circuit_ids: list[str]):
 
 
 def main():
+    # ── AUTO-SYNC CALENDAR ON STARTUP (NEW) ──
+    try:
+        from src.data.calendar_2026 import sync_calendar_from_fastf1
+        
+        # Only sync if FastF1 is available
+        try:
+            import fastf1
+            sync_result = sync_calendar_from_fastf1(season=2026)
+            
+            if sync_result.get("synced", 0) > 0 or sync_result.get("added", 0) > 0:
+                st.toast(
+                    f"📅 Calendar synced: {sync_result['synced']} updated, {sync_result['added']} added",
+                    icon="✅"
+                )
+        except ImportError:
+            pass  # FastF1 not installed, skip sync
+    
+    except Exception as e:
+        # Don't fail app startup if calendar sync fails
+        import logging
+        logging.getLogger(__name__).warning(f"Calendar sync skipped: {e}")
+    
+    # ── PHASE 4: AUTO-LEARNING FOR RECENTLY COMPLETED RACES ──
+    try:
+        from src.engine.auto_learning import schedule_auto_learning_for_completed_races
+        
+        # Check for races completed in last 7 days and update model
+        learning_result = schedule_auto_learning_for_completed_races(season=2026)
+        
+        if learning_result.get("processed_count", 0) > 0:
+            st.toast(
+                f"🤖 Auto-learning: Updated model with {learning_result['processed_count']} recent race(s)",
+                icon="🎯"
+            )
+            logger.info(
+                f"Auto-learning processed {learning_result['processed_count']} races: "
+                f"{[p['name'] for p in learning_result.get('processed', [])]}"
+            )
+    
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Auto-learning scheduler skipped: {e}")
+    
     render_hero()
 
     mode, circuit_ids, driver_options, sims, rain_probability = render_mode_sidebar()
